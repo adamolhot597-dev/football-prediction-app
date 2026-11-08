@@ -3,7 +3,7 @@ import pandas as pd
 
 # إعدادات الصفحة الواجهة
 st.set_page_config(
-    page_page_title="منصة تحليل وتوقعات كرة القدم",
+   page_title="منصة تحليل وتوقعات كرة القدم",
     page_icon="⚽",
     layout="wide"
 )
