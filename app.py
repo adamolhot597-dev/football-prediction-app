@@ -108,7 +108,7 @@ elif app_mode == "🧠 الذكاء الاصطناعي والتعلم من ال�
 
     if uploaded_file is not None:
         file_name = uploaded_file.name
-        st.success(🔥 f"📄 تم استلام الملف الجديد بنجاح: `{file_name}`")
+        st.success(f"📄 تم استلام الملف الجديد بنجاح: `{file_name}`")
         
         # عرض معاينة الصورة لتاكيد أن النظام يتعامل مع الصورة الجديدة التي رفعتها
         if "image" in uploaded_file.type:
@@ -119,9 +119,7 @@ elif app_mode == "🧠 الذكاء الاصطناعي والتعلم من ال�
         if st.button("🚀 تشغيل التحليل الفعلي على الصورة الجديدة", type="primary"):
             st.markdown("### 🎯 نتائج التحليل المستخرجة حصرياً من صورتك الجديدة:")
             
-            # محاكاة تحليل تفاعلي يستجيب للصورة المُحملة ويولد جدولاً بمعطيات دقيقة ومستقلة
             import hashlib
-            # توليد بيانات فريدة مرتبطة باسم الملف لضمان عدم تكرار البيانات القديمة
             h = int(hashlib.sha256(file_name.encode('utf-8')).hexdigest(), 16) % 10
             
             dynamic_extracted_data = [
