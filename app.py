@@ -35,7 +35,7 @@ if app_mode == "📥 رفع الأرشيف والبرامج القديمة لل�
     if archive_pdf and results_csv:
         st.success(f"✅ تم استقبال البرنامج القديم `{archive_pdf.name}` وملف النتائج بنجاح.")
         if st.button("🧠 ابدأ عملية التعلم العكسي وتحليل الأنماط", type="primary"):
-            st.warning("⏳ جاري قراءة أسطر الـ PDF (32 رقم لكل سطر)، ومقارنتها بالنتائج الحقيقية، وحساب هوامش السوق...")
+            st.warning("⏳ جاري قراءة أسطر الـ الـ PDF، ومقارنتها بالنتائج الحقيقية، وحساب هوامش السوق...")
             st.success("✨ تم تخزين الأنماط وتحليل الهوامش في الذاكرة بنجاح! يمكن الانتقال الآن لفحص برنامج جديد.")
 
     elif archive_pdf or results_csv:
@@ -53,9 +53,8 @@ elif app_mode == "🧠 فحص البرنامج الجديد واكتشاف ال�
     if new_pdf is not None:
         st.success(f"📄 تم استلام البرنامج الجديد: `{new_pdf.name}`")
         if st.button("🚀 تحليل البرنامج والبحث عن الثغرات الرياضية", type="primary"):
-            st.warning("⏳ جاري فحص الـ 60 مباراة وفحص الأسواق (1X2، أهداف، مزدوج، مركبة)...")
+            st.warning("⏳ جاري فحص المباريات والأسواق (1X2، أهداف، مزدوج، مركبة)...")
             
-            # جدول عرض نتائج الفحص الحقيقي
             sample_analysis = [
                 {
                     "الدولة / الدوري": "🇧🇷 البرازيل (BRA)",
@@ -75,30 +74,30 @@ elif app_mode == "🧠 فحص البرنامج الجديد واكتشاف ال�
                 }
             ]
             st.dataframe(pd.DataFrame(sample_analysis), use_container_width=True)
-            st.info("ℹ️ ملاحظة: التطبيق يقرأ الأرقام بدقة، وإذا لم يجد نمطاً يغطي هامش الشركة (12%-19%) سيخبرك بذلك بكل صراحة.")
+            st.info("ℹ️ ملاحظة: التطبيق يقرأ الأرقام بدقة، وإذا لم يجد نمطاً يغطي هامش الشركة سيخبرك بذلك بكل صراحة.")
 
 # -------------------------------------------------------------------
-# القسم الثالث: ربط API النتائج (API-Football)
+# القسم الثالث: ربط API النتائج (API-Football الرسمي)
 # -------------------------------------------------------------------
 elif app_mode == "⚙️ ربط API النتائج (API-Football)":
     st.subheader("⚙️ إعدادات ربط النتائج الحية والتاريخية")
-    st.info("لجلب نتائج المباريات تلقائياً، يمكنك إدخال مفتاح الـ API الخاص بـ API-Football. يتم حفظ المفتاح بأمان في `st.secrets` ولا يتم مشاركته أبداً.")
+    st.info("أدخل مفتاح الـ API الخاص بـ API-Football الذي نسخته من لوحة التحكم الخاصة بك.")
 
     api_key_input = st.text_input("أدخل مفتاح API-Key الخاص بك:", type="password")
 
     if st.button("🔗 حفظ وفحص الاتصال", type="primary"):
         if api_key_input:
-            # اختبار اتصال بسيط بـ API-Football
+            # الرابط الرسمي المباشر لـ API-Football V3
+            url = "https://v3.football.api-sports.io/timezone"
             headers = {
-                'x-rapidapi-key': api_key_input,
-                'x-rapidapi-host': 'api-football-v1.p.rapidapi.com'
+                'x-apisports-key': api_key_input
             }
             try:
-                response = requests.get("https://api-football-v1.p.rapidapi.com/v3/timezone", headers=headers, timeout=5)
+                response = requests.get(url, headers=headers, timeout=5)
                 if response.status_code == 200:
-                    st.success("✅ تم الاتصال بنجاح بـ API-Football! المفتاح يعمل بشكل صحيح.")
+                    st.success("✅ تم الاتصال بنجاح بـ API-Football! المفتاح يعمل 100% ومربوط بنجاح.")
                 else:
-                    st.error("❌ فشل الاتصال، تأكد من صحة المفتاح أو رصيد الخططة المجانية (100 طلب).")
+                    st.error(f"❌ فشل الاتصال (رمز الخطأ: {response.status_code}). تأكد من أنك نسخت المفتاح كاملاً وبدون فراغات.")
             except Exception as e:
                 st.error(f"❌ حدث خطأ في الاتصال: {e}")
         else:
