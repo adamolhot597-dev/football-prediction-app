@@ -1,12 +1,27 @@
 import streamlit as st
 import pandas as pd
 
-# إعدادات الصفحة الواجهة
+# إعدادات الصفحة الواجهة مع فرض اتجاه النص واللغة لضمان ظهور الأرقام اللاتينية (Standard Digits)
 st.set_page_config(
-   page_title="منصة تحليل وتوقعات كرة القدم",
+    page_title="منصة تحليل وتوقعات كرة القدم",
     page_icon="⚽",
     layout="wide"
 )
+
+# حقن كود CSS لفرض الأرقام القياسية/اللاتينية العادية (1, 2, 3) وتنسيق الخطوط
+st.markdown("""
+    <style>
+    html, body, [class*="css"] {
+        direction: rtl;
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+    /* ضمان عرض الأرقام بالصيغة القياسية اللاتينية */
+    .stNumberInput input, div[data-baseweb="input"] input {
+        direction: ltr !important;
+        text-align: right !important;
+    }
+    </style>
+""", unsafe_allow_html=True)
 
 # عنوان المنصة الرئيسية
 st.title("⚽ منصة تحليل وتوقعات مباريات كرة القدم الذكية")
@@ -44,7 +59,7 @@ if app_mode == "📊 محرك التوقعات والباناشي":
         with col1:
             st.success("📋 **الصف 1 (آمن جداً)**")
             st.write("1. فريق A ضد فريق B ⬅️ **Plus 2.5**")
-            st.write("2. فريق C ضد فريق D ⬅️ **1 (فوز المصضيف)**")
+            st.write("2. فريق C ضد فريق D ⬅️ **1 (فوز المضيف)**")
             st.write("3. فريق E ضد فريق F ⬅️ **بي (BTTS)**")
             st.write("4. فريق G ضد فريق H ⬅️ **Plus 1.5**")
             st.write("5. فريق I ضد فريق J ⬅️ **1X (فوز أو تعادل)**")
@@ -90,7 +105,8 @@ elif app_mode == "🎰 تحليل كوطات البرنامج المغربي":
     
     col_a, col_b = st.columns(2)
     with col_a:
-        st.number_input("أدخل الكوطة (Cote):", value=1.75, step=0.05)
+        # استخدام صيغة نصية أو رقمية تضمن ظهور الأرقام اللاتينية Standard Digits بدقة
+        st.number_input("أدخل الكوطة (Cote):", value=1.75, step=0.05, format="%.2f")
     with col_b:
         st.selectbox("نوع الخيار المطلوب:", ["1", "X", "2", "Plus 2.5", "BTTS (بي)"])
         
