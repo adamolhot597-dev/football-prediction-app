@@ -22,14 +22,13 @@ def now_ma():
 
 
 # =====================================================================
-# 1) الأعمدة الـ 32 بعد خانة MIN (مستخرجة من الأرقام ماشي من العناوين)
-#    الحظ المزدوج = (1X, X2, 12) | المركبة = (1&M, X&M, 2&M, 1&P, X&P, 2&P)
+# 1) الأعمدة الـ 32 بعد خانة MIN
 # =====================================================================
 def build_selections():
     s = []
     for i, l in enumerate(["1", "X", "2"]):        s.append((0 + i, "1X2", l))
     for i, l in enumerate(["1X", "X2", "12"]):     s.append((3 + i, "حظ مزدوج", l))
-    for i, l in enumerate(["1", "X", "2"]):        s.append((7 + i, "هانديكاب", l))      # index 6 = قيمة H
+    for i, l in enumerate(["1", "X", "2"]):        s.append((7 + i, "هانديكاب", l))
     for i, l in enumerate(["1", "X", "2"]):        s.append((10 + i, "1X2 شوط1", l))
     for i, (line, side) in enumerate([(1.5, "Moins"), (1.5, "Plus"), (2.5, "Moins"),
                                        (2.5, "Plus"), (3.5, "Moins"), (3.5, "Plus")]):
@@ -166,15 +165,15 @@ def similarity(a_text, b_text):
 def explain_error(err):
     e = str(err)
     if "suspended" in e:
-        return "حساب API-Football موقوف. دخل https://dashboard.api-football.com وشوف السبب."
+        return "حساب API-Football موقوف."
     m = re.search(r"from (\d{4}-\d{2}-\d{2}) to (\d{4}-\d{2}-\d{2})", e)
     if m:
         st.session_state["af_window"] = (m.group(1), m.group(2))
         return f"الخطة المجانية كتسمح غير من {m.group(1)} حتى {m.group(2)}."
     if "401" in e or "403" in e or "token" in e.lower():
-        return f"المفتاح غير صحيح ولا ما عندوش صلاحية: {e}"
+        return f"المفتاح غير صحيح: {e}"
     if "429" in e or "rate" in e.lower():
-        return "وصلتي للحد المسموح، عاود من بعد شوية."
+        return "وصلتي للحد المسموح."
     return e
 
 
@@ -374,7 +373,7 @@ def winning_summary(sel):
 
 
 # =====================================================================
-# 5) التحليل والتحسين لعرض أسماء الفرق بوضوح تام في الجداول
+# 5) التحليل
 # =====================================================================
 BANDS = [1.0, 1.2, 1.4, 1.7, 2.0, 2.5, 3.0, 4.0, 6.0, 10.0, 1000]
 BAND_LABELS = ["<1.20", "1.20-1.39", "1.40-1.69", "1.70-1.99", "2.00-2.49", "2.50-2.99",
@@ -503,7 +502,7 @@ def save_pending(p):
 
 
 # =====================================================================
-# 7) الواجهة (مع تحسين عرض أسماء الفرق بوضوح في الجداول)
+# 7) الواجهة (مع إصلاح خطأ عرض أسماء الفرق وتجنب KeyError)
 # =====================================================================
 def get_keys():
     keys = {"af": st.session_state.get("api_key", ""), "fd": st.session_state.get("fd_key", "")}
@@ -525,13 +524,17 @@ def show_ticket(df, title, hist, min_n):
     if tbl is not None:
         sb = add_band(show).merge(tbl[["market", "selection", "band", "n", "نسبة الربح %"]],
                                    on=["market", "selection", "band"], how="left")
-        sb.loc[sb["n"] < min_n, ["n", "نسبة الربح %"]] = float("nan")
-        show = sb.rename(columns={"n": "ماتشات الأرشيف", "نسبة الربح %": "ربح الأرشيف %"}).drop(columns=["band"])
+        # التحقق من وجود عمود 'n' قبل التصفية لتجنب KeyError
+        if "n" in sb.columns:
+            sb.loc[sb["n"] < min_n, ["n", "نسبة الربح %"]] = float("nan")
+            show = sb.rename(columns={"n": "ماتشات الأرشيف", "نسبة الربح %": "ربح الأرشيف %"}).drop(columns=["band"], errors="ignore")
+        else:
+            show = sb.drop(columns=["band"], errors="ignore")
     
     show["احتمال الشركة الصافي %"] = (show["fair_p"] * 100).round(1)
     
-    # تنسيق وتسمية الأعمدة لتظهر أسماء الفرق والمباريات بوضوح تام
-    show = show.rename(columns={
+    # التأكد من تسمية عمود اسم المقابلة بوضوح تام
+    rename_dict = {
         "match": "اسم المقابلة (الفريقين)",
         "market": "السوق",
         "selection": "الاختيار (الرهان)",
@@ -539,12 +542,12 @@ def show_ticket(df, title, hist, min_n):
         "league": "الدوري",
         "date": "التاريخ",
         "time": "التوقيت"
-    })
+    }
+    show = show.rename(columns=rename_dict)
     
-    cols = ["التاريخ", "التوقيت", "الدوري", "اسم المقابلة (الفريقين)", "السوق", "الاختيار (الرهان)", "الكوطي", "احتمال الشركة الصافي %"] + \
-           [c for c in ["ماتشات الأرشيف", "ربح الأرشيف %"] if c in show.columns]
+    available_cols = [c for c in ["التاريخ", "التوقيت", "الدوري", "اسم المقابلة (الفريقين)", "السوق", "الاختيار (الرهان)", "الكوطي", "احتمال الشركة الصافي %", "ماتشات الأرشيف", "ربح الأرشيف %"] if c in show.columns]
     
-    st.dataframe(show[cols], use_container_width=True, hide_index=True)
+    st.dataframe(show[available_cols], use_container_width=True, hide_index=True)
     total_odd, prob = float(df["odd"].prod()), float(df["fair_p"].prod())
     c1, c2, c3 = st.columns(3)
     c1.metric("الكوط الإجمالية", f"{total_odd:.2f}")
@@ -597,8 +600,7 @@ def main():
     # ============================================================= القسم 1
     if mode.startswith("📥"):
         st.subheader("📁 قسم تدريب النظام على البرامج السابقة (Auto-Backtesting)")
-        st.info("ارفع برنامج (ولا برامج) قديمة، زيدها للقائمة، من بعد جيب النتائج الحقيقية. "
-                "API-Football المجاني كيعطي غير آخر 3 أيام تقريبا، فخلي البرنامج فالقائمة وجيب نتائجو فنفس الأسبوع.")
+        st.info("ارفع برنامج (ولا برامج) قديمة، زيدها للقائمة، من بعد جيب النتائج الحقيقية.")
         files = st.file_uploader("📂 ارفع برنامج الرهانات القديم (PDF):", type=["pdf"],
                                   accept_multiple_files=True, key="arch_pdf")
         if files:
@@ -637,8 +639,7 @@ def main():
             if "res" in st.session_state:
                 res, sub = st.session_state.res, st.session_state.sub
                 got = int(res["status"].isin(FINAL).sum())
-                st.info(f"تلقات النتيجة ديال {got} من {len(res)} ماتش. اللي ناقص: لصق النتائج تحت ولا عمّرو بيدك "
-                        "وكتب FT فخانة status (أهداف 1 = الفريق الأول فالبرنامج).")
+                st.info(f"تلقات النتيجة ديال {got} من {len(res)} ماتش.")
                 edited = st.data_editor(
                     res, key="res_editor", hide_index=True, use_container_width=True,
                     disabled=["terminal", "date", "time", "match_text", "api_match", "score_match", "src"],
@@ -646,8 +647,7 @@ def main():
                                    "ga": st.column_config.NumberColumn("أهداف 2", min_value=0, step=1),
                                    "hth": st.column_config.NumberColumn("شوط1 (1)", min_value=0, step=1),
                                    "hta": st.column_config.NumberColumn("شوط1 (2)", min_value=0, step=1)})
-                with st.expander("📋 لصق النتائج من أي موقع (حل بديل)"):
-                    st.caption("كل سطر بهاد الشكل: `Arsenal 3-0 Hull City` ولا مع الشوط الأول `Arsenal 3-0 Hull City (1-0)`.")
+                with st.expander("📋 لصق النتائج من أي موقع"):
                     txt = st.text_area("النتائج:", height=160, key="paste_txt")
                     if st.button("طبّق النتائج الملصوقة"):
                         new_res, n_applied = apply_pasted(edited, txt)
@@ -670,8 +670,7 @@ def main():
                         for k in ("res", "sub", "errs"):
                             st.session_state.pop(k, None)
                         st.session_state.pop("res_editor", None)
-                        st.success(f"✨ تحفظو {new['mid'].nunique()} ماتش. الأرشيف دابا فيه "
-                                     f"{st.session_state.hist['mid'].nunique()} ماتش.")
+                        st.success(f"✨ تحفظو {new['mid'].nunique()} ماتش. الأرشيف دابا فيه {st.session_state.hist['mid'].nunique()} ماتش.")
         if "last" in st.session_state:
             st.markdown("### 📊 الكوطات الرابحة فكل ماتش:")
             st.dataframe(winning_summary(st.session_state.last), use_container_width=True, hide_index=True)
@@ -692,21 +691,20 @@ def main():
                 c2.metric("أسطر كاملة", int(new_prog["ok"].sum()))
                 c3.metric("هامش الشركة فـ 1X2", f"{new_prog['marge_1X2_%'].mean():.1f}%")
                 
-                with st.expander("🔍 تشخيص قراءة الملف"):
-                    st.dataframe(new_prog[["date", "time", "league", "terminal", "match_text", "ok", "marge_1X2_%"]], use_container_width=True, hide_index=True)
-
                 tabs = st.tabs(["📁 كل الماتشات", "🧠 أنماط الأرشيف", "🎯 بناء الأوراق"])
                 
                 future_sel = selections_from_programme(new_prog)
                 
                 with tabs[0]:
                     st.markdown("### جميع المباريات والاختيارات المتاحة في البرنامج:")
-                    st.dataframe(future_sel[["date", "league", "match", "market", "selection", "odd"]].rename(columns={"match": "اسم المقابلة (الفريقين)", "market": "السوق", "selection": "الاختيار", "odd": "الكوطي"}), use_container_width=True, hide_index=True)
+                    df_show_all = future_sel[["date", "league", "match", "market", "selection", "odd"]].rename(
+                        columns={"match": "اسم المقابلة (الفريقين)", "market": "السوق", "selection": "الاختيار", "odd": "الكوطي", "date": "التاريخ", "league": "الدوري"})
+                    st.dataframe(df_show_all, use_container_width=True, hide_index=True)
                 
                 with tabs[1]:
                     st.markdown("### تحليل الأنماط والأرشيف المتوفر:")
                     if hist.empty:
-                        st.warning("⚠️ الأرشيف فارغ حالياً. قم برفع برامج سابقة في القسم الأول وجلب نتائجها لتفعيل الذكاء الاصطناعي.")
+                        st.warning("⚠️ الأرشيف فارغ حالياً. قم برفع برامج سابقة في القسم الأول وجلب نتائجها.")
                     else:
                         tbl = hit_table(hist)
                         st.dataframe(tbl, use_container_width=True, hide_index=True)
@@ -714,14 +712,14 @@ def main():
                 with tabs[2]:
                     st.markdown("### الأوراق المقترحة للرهان (مبنية على الأرشيف والتحليل):")
                     if hist.empty:
-                        st.warning("⚠️ لا توجد بيانات في الأرشيف لبناء الأوراق. ابنِ الأرشيف أولاً.")
+                        st.warning("⚠️ لا توجد بيانات في الأرشيف لبناء الأوراق.")
                     else:
                         min_n = st.slider("أقل عدد مباريات في الأرشيف للثقة:", 5, 50, 15)
                         tbl = hit_table(hist)
                         cand = candidates(future_sel, tbl, min_n)
                         
                         if cand.empty:
-                            st.warning("الأرشيف فيه ماتشات قليلة. أي نمط دابا غيكون بالصدفة (خاصك 300 ماتش على الأقل). لكن ها هي المقترحات المتاحة:")
+                            st.warning("الأرشيف فيه ماتشات قليلة. ها هي المقترحات المتاحة بناءً على الاحتمالات:")
                             cand = future_sel.copy()
                             cand["ROI %"] = 1.0
 
@@ -747,13 +745,11 @@ def main():
             
         if st.button("🔗 فحص الاتصال وحفظ المفاتيح", type="primary"):
             keys = get_keys()
-            success = False
             if keys["af"]:
                 try:
                     r = requests.get(f"{AF_BASE}/timezone", headers={"x-apisports-key": keys["af"]}, timeout=10)
                     if r.status_code == 200:
                         st.success("✅ الاتصال بـ API-Football مستقر 100%!")
-                        success = True
                     else:
                         st.error("❌ فشل الاتصال بـ API-Football، تأكد من المفتاح.")
                 except Exception as e:
@@ -763,7 +759,6 @@ def main():
                     r = requests.get(f"{FD_BASE}/competitions", headers={"X-Auth-Token": keys["fd"]}, timeout=10)
                     if r.status_code == 200:
                         st.success("✅ الاتصال بـ football-data.org مستقر 100%!")
-                        success = True
                     else:
                         st.error("❌ فشل الاتصال بـ football-data.org، تأكد من التوكن.")
                 except Exception as e:
