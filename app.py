@@ -148,7 +148,7 @@ STOP = {"fc", "cf", "sc", "ac", "as", "fk", "sk", "cd", "ud", "club", "de", "la"
 
 
 def _tokens(s):
-    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode().lower()
+    s = unicodedata.normalize("NFKD", str(s)).encode("ascii", "ignore").decode().lower()
     t = [ALIAS.get(x, x) for x in re.findall(r"[a-z0-9]+", s)]
     return [x for x in t if x not in STOP and len(x) > 1]
 
@@ -284,11 +284,11 @@ def _first_pos(prog_tokens, name):
     nt = _tokens(name)
     if not nt or not prog_tokens:
         return 99
-    return min(i for i, p in enumerate(prog_tokens) if SequenceMatcher(None, p, nt[0]).ratio() > 0.75) \
-        if any(SequenceMatcher(None, p, nt[0]).ratio() > 0.75 for p in prog_tokens) else 99
+    return min(i for i, p in enumerate(prog_tokens) if SequenceMatcher(None, p, nt[0]).ratio() > 0.65) \
+        if any(SequenceMatcher(None, p, nt[0]).ratio() > 0.65 for p in prog_tokens) else 99
 
 
-def apply_pasted(res, text, threshold=0.68):
+def apply_pasted(res, text, threshold=0.55):
     res, applied = res.copy(), 0
     for line in text.splitlines():
         m = LINE_RE.match(line)
@@ -391,7 +391,7 @@ def hit_table(sel, by=("market", "selection", "band")):
     d["ret"] = d["won"] * d["odd"] - 1
     d["imp"] = 1 / d["odd"]
     g = d.groupby(list(by), observed=True).agg(n=("won", "size"), hits=("won", "sum"),
-                                               imp=("imp", "mean"), roi=("ret", "mean")).reset_index()
+                                               imp=("imp", "mean"), roi=("roi", "mean")).reset_index()
     g["نسبة الربح %"] = (g["hits"] / g["n"] * 100).round(1)
     g["توقع الكوط %"] = (g["imp"] * 100).round(1)
     g["ROI %"] = (g["roi"] * 100).round(1)
@@ -433,12 +433,8 @@ def candidates(future, table, min_n):
 def make_ticket(pool, n, cap_per_type=None):
     if pool.empty:
         return pd.DataFrame()
-    
-    # تحسين خوارزمية بناء الأوراق لضمان تنوع التواريخ (تغطية 3 أيام فما فوق إن وجدت)
     pool = pool.sort_values("fair_p", ascending=False)
     chosen, used_mids, date_counts, per = [], set(), {}, {}
-    
-    # المحاولة الأولى: أخذ اختيار واحد كحد أقصى لكل تاريخ لضمان أقصى تنوع ممكن بين الأيام
     for _, r in pool.iterrows():
         if r["mid"] in used_mids:
             continue
@@ -448,15 +444,12 @@ def make_ticket(pool, n, cap_per_type=None):
         key = (r["market"], r["selection"])
         if cap_per_type and per.get(key, 0) >= cap_per_type:
             continue
-            
         chosen.append(r)
         used_mids.add(r["mid"])
         date_counts[d_str] = date_counts.get(d_str, 0) + 1
         per[key] = per.get(key, 0) + 1
         if len(chosen) == n:
             break
-            
-    # إذا لم نصل للعدد المطلوب (n)، نكمل باختيارات أخرى من أفضل المتاح بغض النظر عن التاريخ
     if len(chosen) < n:
         for _, r in pool.iterrows():
             if r["mid"] not in used_mids:
@@ -468,7 +461,6 @@ def make_ticket(pool, n, cap_per_type=None):
                 per[key] = per.get(key, 0) + 1
                 if len(chosen) == n:
                     break
-                    
     df_res = pd.DataFrame(chosen)
     if not df_res.empty and "date" in df_res.columns:
         df_res = df_res.sort_values("date")
@@ -531,7 +523,7 @@ def save_pending(p):
 
 
 # =====================================================================
-# 7) الواجهة (عرض مرتب حسب الأيام وتوسيع الأعمدة)
+# 7) الواجهة
 # =====================================================================
 def get_keys():
     keys = {"af": st.session_state.get("api_key", ""), "fd": st.session_state.get("fd_key", "")}
@@ -656,9 +648,9 @@ def main():
             st.caption("القائمة خاوية. ارفع برنامج وزيدو.")
         else:
             all_dates = sorted(pend["date"].dropna().unique())
-            dates = st.multiselect("التواريخ:", all_dates, default=[d for d in all_dates if d <= today_ma()])
+            dates = st.multiselect("التواريخ المحددة للموافيجة والبحث:", all_dates, default=all_dates)
             refresh = st.checkbox("تجاهل الكاش")
-            if st.button("🔎 جلب النتائج الحقيقية", type="primary"):
+            if st.button("🔎 جلب النتائج الحقيقية عبر API", type="primary"):
                 keys = get_keys()
                 if not keys["af"] and not keys["fd"]:
                     st.error("حط مفتاح واحد على الأقل فقسم '⚙️ ربط API'.")
@@ -670,10 +662,20 @@ def main():
                     st.session_state.pop("res_editor", None)
             for e in st.session_state.get("errs", []):
                 st.warning(e)
-            if "res" in st.session_state:
+            if "res" in st.session_state or not pend.empty:
+                if "res" not in st.session_state:
+                    sub = pend[pend["date"].isin(dates) & pend["ok"]].reset_index(drop=True)
+                    st.session_state.sub = sub
+                    st.session_state.res = pd.DataFrame({
+                        "terminal": sub["terminal"], "date": sub["date"], "time": sub["time"],
+                        "match_text": sub["match_text"], "api_match": "", "score_match": 0.0,
+                        "status": "", "gh": None, "ga": None, "hth": None, "hta": None, "src": ""
+                    })
+                
                 res, sub = st.session_state.res, st.session_state.sub
                 got = int(res["status"].isin(FINAL).sum())
-                st.info(f"تلقات النتيجة ديال {got} من {len(res)} ماتش.")
+                st.info(f"تتضمن هذه التواريخ المحددة {len(res)} مباراة في قائمة الانتظار. تلقات النتيجة ديال {got} منها.")
+                
                 edited = st.data_editor(
                     res, key="res_editor", hide_index=True, use_container_width=True,
                     disabled=["terminal", "date", "time", "match_text", "api_match", "score_match", "src"],
@@ -681,20 +683,21 @@ def main():
                                    "ga": st.column_config.NumberColumn("أهداف 2", min_value=0, step=1),
                                    "hth": st.column_config.NumberColumn("شوط1 (1)", min_value=0, step=1),
                                    "hta": st.column_config.NumberColumn("شوط1 (2)", min_value=0, step=1)})
-                with st.expander("📋 لصق النتائج من أي موقع"):
-                    txt = st.text_area("النتائج:", height=160, key="paste_txt")
+                
+                with st.expander("📋 لصق النتائج من أي موقع (التطبيق المباشر)"):
+                    txt = st.text_area("النتائج الملصوقة:", height=160, key="paste_txt")
                     if st.button("طبّق النتائج الملصوقة"):
                         new_res, n_applied = apply_pasted(edited, txt)
                         st.session_state.res = new_res
                         st.session_state.pop("res_editor", None)
-                        st.session_state.msg = f"تطبقات {n_applied} نتيجة."
+                        st.session_state.msg = f"تم العثور وتطبيق {n_applied} مباراة بنجاح على الجدول الفوقاني."
                         st.rerun()
                 if st.session_state.get("msg"):
                     st.success(st.session_state.pop("msg"))
                 if st.button("🧠 ابدأ استخراج وتحليل وحفظ الأرشيف", type="primary"):
                     new = build_history(sub, edited)
                     if new.empty:
-                        st.warning("ما كاين حتى ماتش منتهي بنتيجة.")
+                        st.warning("ما كاين حتى ماتش منتهي بنتيجة من الماتشات المحددة.")
                     else:
                         st.session_state.hist = merge_history(st.session_state.hist, new)
                         save_history(st.session_state.hist)
@@ -705,6 +708,7 @@ def main():
                             st.session_state.pop(k, None)
                         st.session_state.pop("res_editor", None)
                         st.success(f"✨ تحفظو {new['mid'].nunique()} ماتش. الأرشيف دابا فيه {st.session_state.hist['mid'].nunique()} ماتش.")
+                        st.rerun()
         if "last" in st.session_state:
             st.markdown("### 📊 الكوطات الرابحة فكل ماتش:")
             st.dataframe(winning_summary(st.session_state.last), use_container_width=True, hide_index=True)
