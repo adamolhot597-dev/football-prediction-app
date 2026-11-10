@@ -182,7 +182,7 @@ def _cache_path(name):
 
 
 def api_get(path, key, params=None):
-    r = requests.get(f"{AF_BASE}/{path}", headers={"x-apisports-key": key}, params=params or {}, timeout=40)
+    r = requests.get(f"{AF_BASE}/{path}", headers={"x-apisports-key": str(key).strip()}, params=params or {}, timeout=40)
     j = r.json()
     if j.get("errors"):
         raise RuntimeError(str(j["errors"]))
@@ -213,7 +213,8 @@ def fetch_fd(date, token, refresh=False):
     path = _cache_path(f"fx_fd_{date}.json")
     if os.path.exists(path) and not refresh:
         return json.load(open(path, encoding="utf-8"))
-    r = requests.get(f"{FD_BASE}/matches", headers={"X-Auth-Token": token}, timeout=40,
+    clean_token = str(token).strip()
+    r = requests.get(f"{FD_BASE}/matches", headers={"X-Auth-Token": clean_token}, timeout=40,
                      params={"dateFrom": str(date - dt.timedelta(days=1)), "dateTo": str(date + dt.timedelta(days=1))})
     j = r.json()
     if r.status_code != 200:
@@ -391,7 +392,7 @@ def hit_table(sel, by=("market", "selection", "band")):
     d["ret"] = d["won"] * d["odd"] - 1
     d["imp"] = 1 / d["odd"]
     g = d.groupby(list(by), observed=True).agg(n=("won", "size"), hits=("won", "sum"),
-                                               imp=("imp", "mean"), roi=("roi", "mean")).reset_index()
+                                               imp=("imp", "mean"), roi=("ret", "mean")).reset_index()
     g["نسبة الربح %"] = (g["hits"] / g["n"] * 100).round(1)
     g["توقع الكوط %"] = (g["imp"] * 100).round(1)
     g["ROI %"] = (g["roi"] * 100).round(1)
@@ -526,10 +527,10 @@ def save_pending(p):
 # 7) الواجهة
 # =====================================================================
 def get_keys():
-    keys = {"af": st.session_state.get("api_key", ""), "fd": st.session_state.get("fd_key", "")}
+    keys = {"af": str(st.session_state.get("api_key", "")).strip(), "fd": str(st.session_state.get("fd_key", "")).strip()}
     try:
-        keys["af"] = keys["af"] or st.secrets.get("API_FOOTBALL_KEY", "")
-        keys["fd"] = keys["fd"] or st.secrets.get("FOOTBALL_DATA_KEY", "")
+        keys["af"] = keys["af"] or str(st.secrets.get("API_FOOTBALL_KEY", "")).strip()
+        keys["fd"] = keys["fd"] or str(st.secrets.get("FOOTBALL_DATA_KEY", "")).strip()
     except Exception:
         pass
     return keys
@@ -765,53 +766,4 @@ def main():
                         cand = candidates(future_sel, tbl, min_n)
                         
                         if cand.empty:
-                            st.warning("الأرشيف فيه ماتشات قليلة. ها هي المقترحات المتاحة:")
-                            cand = future_sel.copy()
-                            cand["ROI %"] = 1.0
-
-                        st.markdown("---")
-                        show_ticket(make_ticket(cand, 5, cap_per_type=1), "1) ورقة ذهبية (متنوعة الأيام والأعمدة)", hist, min_n)
-                        st.markdown("---")
-                        show_ticket(make_ticket(cand, 6, cap_per_type=2), "2) ورقة متنوعة (تشمل اليوم والغد وبعده)", hist, min_n)
-                        st.markdown("---")
-                        show_ticket(make_ticket(cand[cand["odd"] >= 1.80], 6), "3) ورقة بكوطات كبيرة (من 1.80 لفوق ومنوّعة)", hist, min_n)
-
-    # ============================================================= القسم 3
-    elif mode.startswith("⚙️"):
-        st.subheader("⚙️ إعدادات ربط النتائج الحية والتاريخية")
-        st.info("قم بإدخال مفاتيح الـ API الخاصة بك لاستخراج النتائج الحية والتاريخية تلقائياً.")
-        
-        af_in = st.text_input("مفتاح API-Football الخاص بك:", value=st.session_state.get("api_key", ""), type="password")
-        if af_in:
-            st.session_state["api_key"] = af_in
-            
-        fd_in = st.text_input("توكن football-data.org (البديل المجاني):", value=st.session_state.get("fd_key", ""), type="password")
-        if fd_in:
-            st.session_state["fd_key"] = fd_in
-            
-        if st.button("🔗 فحص الاتصال وحفظ المفاتيح", type="primary"):
-            keys = get_keys()
-            if keys["af"]:
-                try:
-                    r = requests.get(f"{AF_BASE}/timezone", headers={"x-apisports-key": keys["af"]}, timeout=10)
-                    if r.status_code == 200:
-                        st.success("✅ الاتصال بـ API-Football مستقر 100%!")
-                    else:
-                        st.error("❌ فشل الاتصال بـ API-Football، تأكد من المفتاح.")
-                except Exception as e:
-                    st.error(f"❌ خطأ API-Football: {e}")
-            if keys["fd"]:
-                try:
-                    r = requests.get(f"{FD_BASE}/competitions", headers={"X-Auth-Token": keys["fd"]}, timeout=10)
-                    if r.status_code == 200:
-                        st.success("✅ الاتصال بـ football-data.org مستقر 100%!")
-                    else:
-                        st.error("❌ فشل الاتصال بـ football-data.org، تأكد من التوكن.")
-                except Exception as e:
-                    st.error(f"❌ خطأ football-data.org: {e}")
-            if not keys["af"] and not keys["fd"]:
-                st.warning("⚠️ يرجى إدخال مفتاح واحد على الأقل.")
-
-
-if __name__ == "__main__":
-    main()
+                            st.warning("الأرشيف فيه مات
