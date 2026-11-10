@@ -13,7 +13,6 @@ CACHE_DIR = os.path.join(DATA_DIR, "cache")
 
 
 def today_ma():
-    """تاريخ اليوم بتوقيت المغرب (UTC+1)."""
     return (dt.datetime.utcnow() + dt.timedelta(hours=1)).date()
 
 
@@ -432,18 +431,48 @@ def candidates(future, table, min_n):
 
 
 def make_ticket(pool, n, cap_per_type=None):
-    c = pool.sort_values("fair_p", ascending=False)
-    chosen, used, per = [], set(), {}
-    for _, r in c.iterrows():
-        if r["mid"] in used:
+    if pool.empty:
+        return pd.DataFrame()
+    
+    # تحسين خوارزمية بناء الأوراق لضمان تنوع التواريخ (تغطية 3 أيام فما فوق إن وجدت)
+    pool = pool.sort_values("fair_p", ascending=False)
+    chosen, used_mids, date_counts, per = [], set(), {}, {}
+    
+    # المحاولة الأولى: أخذ اختيار واحد كحد أقصى لكل تاريخ لضمان أقصى تنوع ممكن بين الأيام
+    for _, r in pool.iterrows():
+        if r["mid"] in used_mids:
+            continue
+        d_str = str(r["date"])
+        if date_counts.get(d_str, 0) >= 1 and len(date_counts) < n:
             continue
         key = (r["market"], r["selection"])
         if cap_per_type and per.get(key, 0) >= cap_per_type:
             continue
-        chosen.append(r); used.add(r["mid"]); per[key] = per.get(key, 0) + 1
+            
+        chosen.append(r)
+        used_mids.add(r["mid"])
+        date_counts[d_str] = date_counts.get(d_str, 0) + 1
+        per[key] = per.get(key, 0) + 1
         if len(chosen) == n:
             break
-    return pd.DataFrame(chosen)
+            
+    # إذا لم نصل للعدد المطلوب (n)، نكمل باختيارات أخرى من أفضل المتاح بغض النظر عن التاريخ
+    if len(chosen) < n:
+        for _, r in pool.iterrows():
+            if r["mid"] not in used_mids:
+                key = (r["market"], r["selection"])
+                if cap_per_type and per.get(key, 0) >= cap_per_type:
+                    continue
+                chosen.append(r)
+                used_mids.add(r["mid"])
+                per[key] = per.get(key, 0) + 1
+                if len(chosen) == n:
+                    break
+                    
+    df_res = pd.DataFrame(chosen)
+    if not df_res.empty and "date" in df_res.columns:
+        df_res = df_res.sort_values("date")
+    return df_res
 
 
 # =====================================================================
@@ -502,7 +531,7 @@ def save_pending(p):
 
 
 # =====================================================================
-# 7) الواجهة (مع إصلاح خطأ عرض أسماء الفرق وتجنب KeyError)
+# 7) الواجهة (عرض مرتب حسب الأيام وتوسيع الأعمدة)
 # =====================================================================
 def get_keys():
     keys = {"af": st.session_state.get("api_key", ""), "fd": st.session_state.get("fd_key", "")}
@@ -524,7 +553,6 @@ def show_ticket(df, title, hist, min_n):
     if tbl is not None:
         sb = add_band(show).merge(tbl[["market", "selection", "band", "n", "نسبة الربح %"]],
                                    on=["market", "selection", "band"], how="left")
-        # التحقق من وجود عمود 'n' قبل التصفية لتجنب KeyError
         if "n" in sb.columns:
             sb.loc[sb["n"] < min_n, ["n", "نسبة الربح %"]] = float("nan")
             show = sb.rename(columns={"n": "ماتشات الأرشيف", "نسبة الربح %": "ربح الأرشيف %"}).drop(columns=["band"], errors="ignore")
@@ -533,7 +561,6 @@ def show_ticket(df, title, hist, min_n):
     
     show["احتمال الشركة الصافي %"] = (show["fair_p"] * 100).round(1)
     
-    # التأكد من تسمية عمود اسم المقابلة بوضوح تام
     rename_dict = {
         "match": "اسم المقابلة (الفريقين)",
         "market": "السوق",
@@ -545,9 +572,16 @@ def show_ticket(df, title, hist, min_n):
     }
     show = show.rename(columns=rename_dict)
     
-    available_cols = [c for c in ["التاريخ", "التوقيت", "الدوري", "اسم المقابلة (الفريقين)", "السوق", "الاختيار (الرهان)", "الكوطي", "احتمال الشركة الصافي %", "ماتشات الأرشيف", "ربح الأرشيف %"] if c in show.columns]
+    desired_cols = ["اسم المقابلة (الفريقين)", "التاريخ", "التوقيت", "الدوري", "السوق", "الاختيار (الرهان)", "الكوطي", "احتمال الشركة الصافي %", "ماتشات الأرشيف", "ربح الأرشيف %"]
+    available_cols = [c for c in desired_cols if c in show.columns]
     
-    st.dataframe(show[available_cols], use_container_width=True, hide_index=True)
+    column_config = {
+        "اسم المقابلة (الفريقين)": st.column_config.TextColumn("اسم المقابلة (الفريقين)", width="large"),
+        "التاريخ": st.column_config.DateColumn("التاريخ", width="medium"),
+    }
+    
+    st.dataframe(show[available_cols], use_container_width=True, hide_index=True, column_config=column_config)
+    
     total_odd, prob = float(df["odd"].prod()), float(df["fair_p"].prod())
     c1, c2, c3 = st.columns(3)
     c1.metric("الكوط الإجمالية", f"{total_odd:.2f}")
@@ -691,15 +725,23 @@ def main():
                 c2.metric("أسطر كاملة", int(new_prog["ok"].sum()))
                 c3.metric("هامش الشركة فـ 1X2", f"{new_prog['marge_1X2_%'].mean():.1f}%")
                 
-                tabs = st.tabs(["📁 كل الماتشات", "🧠 أنماط الأرشيف", "🎯 بناء الأوراق"])
+                tabs = st.tabs(["📁 كل الماتشات حسب الأيام", "🧠 أنماط الأرشيف", "🎯 بناء الأوراق المتنوعة"])
                 
                 future_sel = selections_from_programme(new_prog)
                 
                 with tabs[0]:
-                    st.markdown("### جميع المباريات والاختيارات المتاحة في البرنامج:")
-                    df_show_all = future_sel[["date", "league", "match", "market", "selection", "odd"]].rename(
-                        columns={"match": "اسم المقابلة (الفريقين)", "market": "السوق", "selection": "الاختيار", "odd": "الكوطي", "date": "التاريخ", "league": "الدوري"})
-                    st.dataframe(df_show_all, use_container_width=True, hide_index=True)
+                    st.markdown("### 📅 المباريات مرتبة حسب الأيام (اليوم، غدا، بعد غدا...):")
+                    if not future_sel.empty and "date" in future_sel.columns:
+                        unique_prog_dates = sorted(future_sel["date"].dropna().unique())
+                        selected_prog_date = st.selectbox("اختر اليوم لعرض مبارياته:", unique_prog_dates)
+                        day_filtered_df = future_sel[future_sel["date"] == selected_prog_date]
+                        
+                        df_show_day = day_filtered_df[["match", "time", "league", "market", "selection", "odd"]].rename(
+                            columns={"match": "اسم المقابلة (الفريقين)", "time": "التوقيت", "league": "الدوري", "market": "السوق", "selection": "الاختيار", "odd": "الكوطي"})
+                        col_conf_day = {"اسم المقابلة (الفريقين)": st.column_config.TextColumn("اسم المقابلة (الفريقين)", width="large")}
+                        st.dataframe(df_show_day, use_container_width=True, hide_index=True, column_config=col_conf_day)
+                    else:
+                        st.info("لا توجد تواريخ متاحة.")
                 
                 with tabs[1]:
                     st.markdown("### تحليل الأنماط والأرشيف المتوفر:")
@@ -710,7 +752,7 @@ def main():
                         st.dataframe(tbl, use_container_width=True, hide_index=True)
                 
                 with tabs[2]:
-                    st.markdown("### الأوراق المقترحة للرهان (مبنية على الأرشيف والتحليل):")
+                    st.markdown("### 🎯 الأوراق المقترحة (متنوعة التواريخ لتغطية الأيام القادمة):")
                     if hist.empty:
                         st.warning("⚠️ لا توجد بيانات في الأرشيف لبناء الأوراق.")
                     else:
@@ -719,16 +761,16 @@ def main():
                         cand = candidates(future_sel, tbl, min_n)
                         
                         if cand.empty:
-                            st.warning("الأرشيف فيه ماتشات قليلة. ها هي المقترحات المتاحة بناءً على الاحتمالات:")
+                            st.warning("الأرشيف فيه ماتشات قليلة. ها هي المقترحات المتاحة:")
                             cand = future_sel.copy()
                             cand["ROI %"] = 1.0
 
                         st.markdown("---")
-                        show_ticket(make_ticket(cand, 5, cap_per_type=1), "1) ورقة ذهبية (أعلى احتمال للربح)", hist, min_n)
+                        show_ticket(make_ticket(cand, 5, cap_per_type=1), "1) ورقة ذهبية (متنوعة الأيام والأعمدة)", hist, min_n)
                         st.markdown("---")
-                        show_ticket(make_ticket(cand, 6, cap_per_type=2), "2) ورقة متنوعة (بحد أقصى اختيارين من نفس النوع)", hist, min_n)
+                        show_ticket(make_ticket(cand, 6, cap_per_type=2), "2) ورقة متنوعة (تشمل اليوم والغد وبعده)", hist, min_n)
                         st.markdown("---")
-                        show_ticket(make_ticket(cand[cand["odd"] >= 1.80], 6), "3) ورقة بكوطات كبيرة (من 1.80 لفوق)", hist, min_n)
+                        show_ticket(make_ticket(cand[cand["odd"] >= 1.80], 6), "3) ورقة بكوطات كبيرة (من 1.80 لفوق ومنوّعة)", hist, min_n)
 
     # ============================================================= القسم 3
     elif mode.startswith("⚙️"):
