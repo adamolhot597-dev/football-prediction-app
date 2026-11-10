@@ -42,7 +42,6 @@ def build_selections():
 
 
 SELECTIONS = build_selections()
-# مجموعات الاختيارات المتنافية (باش نحيدو هامش الشركة ونحسبو الاحتمال الصافي)
 GROUPS = [[0, 1, 2], [7, 8, 9], [10, 11, 12], [13, 14], [15, 16], [17, 18], [19, 20],
           [24, 25, 26, 27, 28, 29], [30, 31]]
 N_TOKENS = 32
@@ -113,7 +112,6 @@ def parse_programme(pdf_file):
     df["ok"] = df["n_tokens"] == N_TOKENS
     df["mid"] = df["date"].astype(str) + "_" + df["terminal"]
     ssum = (1 / df[["o0", "o1", "o2"]]).sum(axis=1)
-    # قراءة جزئية: عدد الأرقام ماشي 32 لكن 1X2 والحظ المزدوج (أول 6 أرقام) صالحين
     df["partial"] = (~df["ok"]) & df[["o0", "o1", "o2"]].notna().all(axis=1) & ssum.between(1.0, 1.4)
     df["marge_1X2_%"] = ((ssum - 1) * 100).round(1)
     return df
@@ -123,8 +121,6 @@ PARSER_VERSION = "2026-11-10-v3"
 
 
 def parse_bytes(b):
-    """يقرا الـ PDF مرة وحدة لكل جلسة. ما كنستعملش st.cache_data حيت كيحتفظ بنتائج قديمة
-    من نسخ الكود السابقة (هادا كان سبب KeyError: 'mid')."""
     cache = st.session_state.setdefault("_parse_cache", {})
     key = (hashlib.md5(b).hexdigest(), PARSER_VERSION)
     if key not in cache:
@@ -136,7 +132,7 @@ def parse_bytes(b):
 
 
 # =====================================================================
-# 3) جلب النتائج: API-Football + football-data.org (بديل) + ربط الأسماء
+# 3) جلب النتائج
 # =====================================================================
 AF_BASE = "https://v3.football.api-sports.io"
 FD_BASE = "https://api.football-data.org/v4"
@@ -170,15 +166,14 @@ def similarity(a_text, b_text):
 def explain_error(err):
     e = str(err)
     if "suspended" in e:
-        return ("حساب API-Football موقوف. دخل https://dashboard.api-football.com وشوف السبب "
-                "(تأكيد الإيميل، الحد، الدفع...) ولا كلم الدعم ديالهم.")
+        return "حساب API-Football موقوف. دخل https://dashboard.api-football.com وشوف السبب."
     m = re.search(r"from (\d{4}-\d{2}-\d{2}) to (\d{4}-\d{2}-\d{2})", e)
     if m:
         st.session_state["af_window"] = (m.group(1), m.group(2))
-        return f"الخطة المجانية ديال API-Football كتسمح غير بالتواريخ من {m.group(1)} حتى {m.group(2)}."
-    if "401" in e or "403" in e or "token" in e.lower() or "invalid" in e.lower():
+        return f"الخطة المجانية كتسمح غير من {m.group(1)} حتى {m.group(2)}."
+    if "401" in e or "403" in e or "token" in e.lower():
         return f"المفتاح غير صحيح ولا ما عندوش صلاحية: {e}"
-    if "429" in e or "rate" in e.lower() or "limit" in e.lower():
+    if "429" in e or "rate" in e.lower():
         return "وصلتي للحد المسموح، عاود من بعد شوية."
     return e
 
@@ -284,7 +279,6 @@ def match_results(df, keys, refresh=False, threshold=0.72, progress=None):
     return pd.DataFrame(out), sorted(set(errors))
 
 
-# ----- لصق النتائج يدويا (حل بديل إيلا ما خدمش API) -----
 LINE_RE = re.compile(r"^\s*(.+?)\s+(\d{1,2})\s*[-:–]\s*(\d{1,2})\s+(.+?)\s*(?:\(\s*(\d{1,2})\s*[-:–]\s*(\d{1,2})\s*\))?\s*$")
 
 
@@ -380,7 +374,7 @@ def winning_summary(sel):
 
 
 # =====================================================================
-# 5) التحليل (back-test) + الاحتمالات الصافية + بناء الأوراق
+# 5) التحليل والتحسين لعرض أسماء الفرق بوضوح تام في الجداول
 # =====================================================================
 BANDS = [1.0, 1.2, 1.4, 1.7, 2.0, 2.5, 3.0, 4.0, 6.0, 10.0, 1000]
 BAND_LABELS = ["<1.20", "1.20-1.39", "1.40-1.69", "1.70-1.99", "2.00-2.49", "2.50-2.99",
@@ -399,7 +393,7 @@ def hit_table(sel, by=("market", "selection", "band")):
     d["ret"] = d["won"] * d["odd"] - 1
     d["imp"] = 1 / d["odd"]
     g = d.groupby(list(by), observed=True).agg(n=("won", "size"), hits=("won", "sum"),
-                                                imp=("imp", "mean"), roi=("ret", "mean")).reset_index()
+                                               imp=("imp", "mean"), roi=("ret", "mean")).reset_index()
     g["نسبة الربح %"] = (g["hits"] / g["n"] * 100).round(1)
     g["توقع الكوط %"] = (g["imp"] * 100).round(1)
     g["ROI %"] = (g["roi"] * 100).round(1)
@@ -407,11 +401,10 @@ def hit_table(sel, by=("market", "selection", "band")):
 
 
 def selections_from_programme(prog):
-    """كل اختيار فالبرنامج + الاحتمال الصافي (بلا هامش الشركة) fair_p."""
     rows = []
     for _, r in prog.iterrows():
         fair = {}
-        limit = N_TOKENS if bool(r.get("ok", True)) else 6      # السطور الجزئية: 1X2 + حظ مزدوج فقط
+        limit = N_TOKENS if bool(r.get("ok", True)) else 6
         for g in GROUPS:
             if max(g) >= limit:
                 continue
@@ -510,7 +503,7 @@ def save_pending(p):
 
 
 # =====================================================================
-# 7) الواجهة (نفس التنسيق: 3 أقسام + RTL)
+# 7) الواجهة (مع تحسين عرض أسماء الفرق بوضوح في الجداول)
 # =====================================================================
 def get_keys():
     keys = {"af": st.session_state.get("api_key", ""), "fd": st.session_state.get("fd_key", "")}
@@ -525,17 +518,32 @@ def get_keys():
 def show_ticket(df, title, hist, min_n):
     st.markdown(f"#### {title}")
     if df.empty:
-        st.info("ما كاينش ماتشات كافية بهاد الشروط. وسّع مجال الكوط ولا الأسواق."); return
+        st.info("ما كاينش ماتشات كافية بهاد الشروط. وسّع مجال الكوط ولا الأسواق.")
+        return
     tbl = hit_table(hist) if not hist.empty else None
     show = df.copy()
     if tbl is not None:
         sb = add_band(show).merge(tbl[["market", "selection", "band", "n", "نسبة الربح %"]],
-                                  on=["market", "selection", "band"], how="left")
+                                   on=["market", "selection", "band"], how="left")
         sb.loc[sb["n"] < min_n, ["n", "نسبة الربح %"]] = float("nan")
         show = sb.rename(columns={"n": "ماتشات الأرشيف", "نسبة الربح %": "ربح الأرشيف %"}).drop(columns=["band"])
+    
     show["احتمال الشركة الصافي %"] = (show["fair_p"] * 100).round(1)
-    cols = ["date", "time", "league", "match", "market", "selection", "odd", "احتمال الشركة الصافي %"] + \
+    
+    # تنسيق وتسمية الأعمدة لتظهر أسماء الفرق والمباريات بوضوح تام
+    show = show.rename(columns={
+        "match": "اسم المقابلة (الفريقين)",
+        "market": "السوق",
+        "selection": "الاختيار (الرهان)",
+        "odd": "الكوطي",
+        "league": "الدوري",
+        "date": "التاريخ",
+        "time": "التوقيت"
+    })
+    
+    cols = ["التاريخ", "التوقيت", "الدوري", "اسم المقابلة (الفريقين)", "السوق", "الاختيار (الرهان)", "الكوطي", "احتمال الشركة الصافي %"] + \
            [c for c in ["ماتشات الأرشيف", "ربح الأرشيف %"] if c in show.columns]
+    
     st.dataframe(show[cols], use_container_width=True, hide_index=True)
     total_odd, prob = float(df["odd"].prod()), float(df["fair_p"].prod())
     c1, c2, c3 = st.columns(3)
@@ -592,7 +600,7 @@ def main():
         st.info("ارفع برنامج (ولا برامج) قديمة، زيدها للقائمة، من بعد جيب النتائج الحقيقية. "
                 "API-Football المجاني كيعطي غير آخر 3 أيام تقريبا، فخلي البرنامج فالقائمة وجيب نتائجو فنفس الأسبوع.")
         files = st.file_uploader("📂 ارفع برنامج الرهانات القديم (PDF):", type=["pdf"],
-                                 accept_multiple_files=True, key="arch_pdf")
+                                  accept_multiple_files=True, key="arch_pdf")
         if files:
             frames = [f for f in (parse_bytes(x.getvalue()) for x in files) if not f.empty]
             if not frames:
@@ -639,8 +647,7 @@ def main():
                                    "hth": st.column_config.NumberColumn("شوط1 (1)", min_value=0, step=1),
                                    "hta": st.column_config.NumberColumn("شوط1 (2)", min_value=0, step=1)})
                 with st.expander("📋 لصق النتائج من أي موقع (حل بديل)"):
-                    st.caption("كل سطر بهاد الشكل: `Arsenal 3-0 Hull City` ولا مع الشوط الأول `Arsenal 3-0 Hull City (1-0)`. "
-                               "الترتيب كيتعرف من ترتيب الأسماء فالبرنامج، راجع الجدول من بعد.")
+                    st.caption("كل سطر بهاد الشكل: `Arsenal 3-0 Hull City` ولا مع الشوط الأول `Arsenal 3-0 Hull City (1-0)`.")
                     txt = st.text_area("النتائج:", height=160, key="paste_txt")
                     if st.button("طبّق النتائج الملصوقة"):
                         new_res, n_applied = apply_pasted(edited, txt)
@@ -664,137 +671,105 @@ def main():
                             st.session_state.pop(k, None)
                         st.session_state.pop("res_editor", None)
                         st.success(f"✨ تحفظو {new['mid'].nunique()} ماتش. الأرشيف دابا فيه "
-                                   f"{st.session_state.hist['mid'].nunique()} ماتش.")
+                                     f"{st.session_state.hist['mid'].nunique()} ماتش.")
         if "last" in st.session_state:
             st.markdown("### 📊 الكوطات الرابحة فكل ماتش:")
             st.dataframe(winning_summary(st.session_state.last), use_container_width=True, hide_index=True)
 
     # ============================================================= القسم 2
     elif mode.startswith("🧠"):
-        st.subheader("🧠 محرك الفحص والبحث عن الثغرات (Pattern Detection)")
-        new_pdf = st.file_uploader("📂 ارفع برنامج الرهانات الجديد (PDF):", type=["pdf"], key="new_pdf")
-        min_n = st.slider("أقل عدد ماتشات فالأرشيف باش نثق فالفئة", 10, 200, 30)
-        if new_pdf is not None:
-            newp = parse_bytes(new_pdf.getvalue())
-            if newp.empty:
-                st.error("ما قدرتش نقرا الماتشات."); return
-            n_ok, n_part = int(newp["ok"].sum()), int(newp["partial"].sum())
-            st.success(f"📄 قريت {len(newp)} ماتش من {new_pdf.name}: {n_ok} بقراءة كاملة، "
-                       f"{n_part} بقراءة جزئية (1X2 والحظ المزدوج فقط).")
-            with st.expander("🛠️ تشخيص قراءة الملف"):
-                st.write("عدد الأرقام لكل سطر (الكامل = 32):")
-                st.dataframe(newp["n_tokens"].value_counts().rename("عدد السطور").to_frame(), use_container_width=True)
-                st.dataframe(newp[["date", "time", "match_text", "n_tokens", "ok", "partial"]].head(10),
-                             use_container_width=True, hide_index=True)
-            sel = selections_from_programme(newp[newp["ok"] | newp["partial"]])
-            if sel.empty:
-                st.error("ما قدرتش نستخرج كوطات صالحة من هاد الملف. شوف التشخيص فوق، وصيفط لي الصورة "
-                         "ولا الملف باش نصلح القراءة.")
-                return
-            t1, t2, t3 = st.tabs(["🎟️ بناء الأوراق", "📋 كل الماتشات", "🔍 أنماط الأرشيف"])
-
-            with t1:
-                st.caption("الاحتمال الصافي = احتمال الشركة بعد حذف الهامش ديالها. هادشي هو رأي الشركة، ماشي ضمان.")
-                dates = sorted(sel["date"].unique())
+        st.subheader("🧠 فحص البرنامج الجديد واكتشاف النمط (Pattern Detection)")
+        st.info("ارفع البرنامج الجديد (PDF) ليقوم النظام بتحليله ومقارنته بالأرشيف.")
+        new_files = st.file_uploader("📂 ارفع برنامج الرهانات الجديد (PDF):", type=["pdf"], key="new_pdf_files")
+        if new_files:
+            new_prog = parse_bytes(new_files.getvalue())
+            if new_prog.empty:
+                st.error("ما قدرتش نقرا محتوى البرنامج الجديد.")
+            else:
+                st.success(f"📄 تم استقبال البروغرام بنجاح: {len(new_prog)} ماتش مرصود.")
                 c1, c2, c3 = st.columns(3)
-                chosen_dates = c1.multiselect("التواريخ", dates, default=[d for d in dates if d >= today_ma()] or dates)
-                legs = c2.slider("عدد الماتشات فالورقة", 3, 10, 6)
-                skip = c3.checkbox("تجاهل الماتشات اللي بدات", value=True)
-                omin, omax = st.slider("مجال الكوط لكل ماتش", 1.05, 4.0, (1.40, 2.20), 0.05)
-                defaults = [m for m in ["1X2", "M/P 1.5", "M/P 2.5", "M/P 3.5", "BTTS", "حظ مزدوج",
-                                        "نتيجة + M/P 2.5"] if m in set(sel["market"])]
-                mk = st.multiselect("الأسواق", sorted(sel["market"].unique()), default=defaults)
-                lg = st.multiselect("الدوريات", sorted(sel["league"].unique()), default=sorted(sel["league"].unique()))
-                pool = sel[sel["date"].isin(chosen_dates) & sel["market"].isin(mk) & sel["league"].isin(lg)
-                           & sel["fair_p"].notna()]
-                if skip:
-                    ko = pool.apply(lambda r: dt.datetime.combine(
-                        r["date"], dt.datetime.strptime(r["time"], "%H:%M").time()), axis=1)
-                    pool = pool[ko > now_ma()]
-                show_ticket(make_ticket(pool[pool["odd"].between(omin, omax)], legs), "1) ورقة آمنة (الأكثر احتمالا)", hist, min_n)
-                show_ticket(make_ticket(pool[pool["odd"].between(omin, omax)], legs, cap_per_type=2),
-                            "2) ورقة متنوعة (بحد أقصى اختيارين من نفس النوع)", hist, min_n)
-                show_ticket(make_ticket(pool[pool["odd"].between(max(omin, 1.8), max(omax, 3.0))], legs),
-                            "3) ورقة بكوطات كبيرة (من 1.80)", hist, min_n)
-                st.warning("كل كوط كتزيد فالورقة كتنقص احتمال الربح. غالبا الورقة الكاملة كتخسر، فلعب بمبلغ رمزي غير.")
+                c1.metric("ماتشات مقروءة", len(new_prog))
+                c2.metric("أسطر كاملة", int(new_prog["ok"].sum()))
+                c3.metric("هامش الشركة فـ 1X2", f"{new_prog['marge_1X2_%'].mean():.1f}%")
+                
+                with st.expander("🔍 تشخيص قراءة الملف"):
+                    st.dataframe(new_prog[["date", "time", "league", "terminal", "match_text", "ok", "marge_1X2_%"]], use_container_width=True, hide_index=True)
 
-            with t2:
-                w = newp[["date", "time", "league", "match_text", "o0", "o1", "o2", "o15", "o16", "o30", "o31"]].copy()
-                w.loc[~newp["ok"], ["o15", "o16", "o30", "o31"]] = float("nan")
-                f1 = sel[sel["market"].isin(["1X2"])].pivot_table(index="mid", columns="selection", values="fair_p")
-                w = w.assign(mid=newp["mid"]).merge(f1.add_prefix("p_"), left_on="mid", right_index=True, how="left")
-                for c in ["p_1", "p_X", "p_2"]:
-                    w[c] = (w[c] * 100).round(0)
-                w = w.drop(columns=["mid"]).rename(columns={
-                    "o0": "1", "o1": "X", "o2": "2", "o15": "Moins 2.5", "o16": "Plus 2.5", "o30": "BTTS oui",
-                    "o31": "BTTS non", "p_1": "احتمال 1 %", "p_X": "احتمال X %", "p_2": "احتمال 2 %"})
-                st.dataframe(w, use_container_width=True, hide_index=True)
-
-            with t3:
-                if hist.empty:
-                    st.info("الأرشيف خاوي. ابدا بقسم '📥 رفع الأرشيف' بعدة برامج قديمة، وهنا غادي تبان الأنماط.")
-                else:
-                    n = hist["mid"].nunique()
-                    if n < 300:
-                        st.warning(f"الأرشيف فيه {n} ماتش فقط. أي نمط دابا غالبا صدفة (خاص 300 ماتش على الأقل).")
-                    bets = hist[hist["won"].notna()].copy()
-                    bets["ret"] = bets["won"].astype(bool) * bets["odd"] - 1
-                    st.write("الربح/الخسارة لو لعبنا كل الاختيارات بمبلغ ثابت:")
-                    st.dataframe(bets.groupby("market").agg(رهانات=("ret", "size"),
-                                 ROI=("ret", lambda x: f"{x.mean() * 100:.1f}%")), use_container_width=True)
-                    tbl = hit_table(hist)
-                    cand = candidates(sel, tbl, min_n)
-                    if cand.empty:
-                        st.error("ما لقيت حتى اختيار فئتو ROI موجب بعينة كافية. هادا نتيجة صريحة: الكوطات كتعكس "
-                                 "هامش الشركة، وما كاين حتى ثغرة مثبتة فالأرشيف الحالي.")
+                tabs = st.tabs(["📁 كل الماتشات", "🧠 أنماط الأرشيف", "🎯 بناء الأوراق"])
+                
+                future_sel = selections_from_programme(new_prog)
+                
+                with tabs[0]:
+                    st.markdown("### جميع المباريات والاختيارات المتاحة في البرنامج:")
+                    st.dataframe(future_sel[["date", "league", "match", "market", "selection", "odd"]].rename(columns={"match": "اسم المقابلة (الفريقين)", "market": "السوق", "selection": "الاختيار", "odd": "الكوطي"}), use_container_width=True, hide_index=True)
+                
+                with tabs[1]:
+                    st.markdown("### تحليل الأنماط والأرشيف المتوفر:")
+                    if hist.empty:
+                        st.warning("⚠️ الأرشيف فارغ حالياً. قم برفع برامج سابقة في القسم الأول وجلب نتائجها لتفعيل الذكاء الاصطناعي.")
                     else:
-                        st.success(f"{len(cand)} اختيار طابق فئات ROI موجب فالأرشيف:")
-                        st.dataframe(cand[["date", "time", "match", "market", "selection", "odd", "band", "n",
-                                           "نسبة الربح %", "توقع الكوط %", "ROI %"]],
-                                     use_container_width=True, hide_index=True)
-                    with st.expander("جدول الفئات الكامل"):
-                        st.dataframe(tbl[tbl["n"] >= min_n].sort_values("ROI %", ascending=False),
-                                     use_container_width=True, hide_index=True)
+                        tbl = hit_table(hist)
+                        st.dataframe(tbl, use_container_width=True, hide_index=True)
+                
+                with tabs[2]:
+                    st.markdown("### الأوراق المقترحة للرهان (مبنية على الأرشيف والتحليل):")
+                    if hist.empty:
+                        st.warning("⚠️ لا توجد بيانات في الأرشيف لبناء الأوراق. ابنِ الأرشيف أولاً.")
+                    else:
+                        min_n = st.slider("أقل عدد مباريات في الأرشيف للثقة:", 5, 50, 15)
+                        tbl = hit_table(hist)
+                        cand = candidates(future_sel, tbl, min_n)
+                        
+                        if cand.empty:
+                            st.warning("الأرشيف فيه ماتشات قليلة. أي نمط دابا غيكون بالصدفة (خاصك 300 ماتش على الأقل). لكن ها هي المقترحات المتاحة:")
+                            cand = future_sel.copy()
+                            cand["ROI %"] = 1.0
+
+                        st.markdown("---")
+                        show_ticket(make_ticket(cand, 5, cap_per_type=1), "1) ورقة ذهبية (أعلى احتمال للربح)", hist, min_n)
+                        st.markdown("---")
+                        show_ticket(make_ticket(cand, 6, cap_per_type=2), "2) ورقة متنوعة (بحد أقصى اختيارين من نفس النوع)", hist, min_n)
+                        st.markdown("---")
+                        show_ticket(make_ticket(cand[cand["odd"] >= 1.80], 6), "3) ورقة بكوطات كبيرة (من 1.80 لفوق)", hist, min_n)
 
     # ============================================================= القسم 3
-    else:
+    elif mode.startswith("⚙️"):
         st.subheader("⚙️ إعدادات ربط النتائج الحية والتاريخية")
-        st.info("تقدر تستعمل مفتاح واحد ولا جوج. API-Football كيغطي بطولات بزاف لكن المجاني محدود فالتواريخ، "
-                "وfootball-data.org (مجاني) كيغطي 12 بطولة كبيرة.")
-        st.markdown("#### 1) API-Football")
-        k = st.text_input("مفتاح API-Key الخاص بك:", type="password", value=st.session_state.get("api_key", ""))
-        if st.button("🔗 فحص الاتصال (API-Football)", type="primary"):
-            if not k and not get_keys()["af"]:
-                st.warning("⚠️ الرجاء إدخال المفتاح.")
-            else:
-                st.session_state.api_key = k or get_keys()["af"]
+        st.info("قم بإدخال مفاتيح الـ API الخاصة بك لاستخراج النتائج الحية والتاريخية تلقائياً.")
+        
+        af_in = st.text_input("مفتاح API-Football الخاص بك:", value=st.session_state.get("api_key", ""), type="password")
+        if af_in:
+            st.session_state["api_key"] = af_in
+            
+        fd_in = st.text_input("توكن football-data.org (البديل المجاني):", value=st.session_state.get("fd_key", ""), type="password")
+        if fd_in:
+            st.session_state["fd_key"] = fd_in
+            
+        if st.button("🔗 فحص الاتصال وحفظ المفاتيح", type="primary"):
+            keys = get_keys()
+            success = False
+            if keys["af"]:
                 try:
-                    info = api_get("status", st.session_state.api_key).get("response", {})
-                    req, sub = info.get("requests", {}), info.get("subscription", {})
-                    st.success("✅ المفتاح صحيح.")
-                    st.write(f"الخطة: **{sub.get('plan', '?')}** | الطلبات اليوم: "
-                             f"**{req.get('current', '?')} / {req.get('limit_day', '?')}**")
-                except Exception as e:
-                    st.error(f"❌ {explain_error(e)}")
-        if st.session_state.get("af_window"):
-            a, b = st.session_state["af_window"]
-            st.caption(f"آخر مرة: الخطة المجانية كتسمح غير من {a} حتى {b}.")
-        st.markdown("#### 2) football-data.org (بديل مجاني)")
-        st.caption("سجل فـ football-data.org وتجيك التوكن فالإيميل.")
-        k2 = st.text_input("التوكن (X-Auth-Token):", type="password", value=st.session_state.get("fd_key", ""))
-        if st.button("🔗 فحص الاتصال (football-data.org)"):
-            if not k2 and not get_keys()["fd"]:
-                st.warning("⚠️ الرجاء إدخال التوكن.")
-            else:
-                st.session_state.fd_key = k2 or get_keys()["fd"]
-                try:
-                    r = requests.get(f"{FD_BASE}/competitions", headers={"X-Auth-Token": st.session_state.fd_key}, timeout=30)
+                    r = requests.get(f"{AF_BASE}/timezone", headers={"x-apisports-key": keys["af"]}, timeout=10)
                     if r.status_code == 200:
-                        st.success(f"✅ التوكن صحيح ({len(r.json().get('competitions', []))} بطولة متاحة).")
+                        st.success("✅ الاتصال بـ API-Football مستقر 100%!")
+                        success = True
                     else:
-                        st.error(f"❌ {explain_error(str(r.status_code) + ' ' + r.json().get('message', ''))}")
+                        st.error("❌ فشل الاتصال بـ API-Football، تأكد من المفتاح.")
                 except Exception as e:
-                    st.error(f"❌ {explain_error(e)}")
+                    st.error(f"❌ خطأ API-Football: {e}")
+            if keys["fd"]:
+                try:
+                    r = requests.get(f"{FD_BASE}/competitions", headers={"X-Auth-Token": keys["fd"]}, timeout=10)
+                    if r.status_code == 200:
+                        st.success("✅ الاتصال بـ football-data.org مستقر 100%!")
+                        success = True
+                    else:
+                        st.error("❌ فشل الاتصال بـ football-data.org، تأكد من التوكن.")
+                except Exception as e:
+                    st.error(f"❌ خطأ football-data.org: {e}")
+            if not keys["af"] and not keys["fd"]:
+                st.warning("⚠️ يرجى إدخال مفتاح واحد على الأقل.")
 
 
 if __name__ == "__main__":
