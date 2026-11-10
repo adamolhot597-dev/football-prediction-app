@@ -112,7 +112,10 @@ def parse_programme(pdf_file):
         return df
     df["ok"] = df["n_tokens"] == N_TOKENS
     df["mid"] = df["date"].astype(str) + "_" + df["terminal"]
-    df["marge_1X2_%"] = ((1 / df[["o0", "o1", "o2"]]).sum(axis=1).sub(1) * 100).round(1)
+    ssum = (1 / df[["o0", "o1", "o2"]]).sum(axis=1)
+    # قراءة جزئية: عدد الأرقام ماشي 32 لكن 1X2 والحظ المزدوج (أول 6 أرقام) صالحين
+    df["partial"] = (~df["ok"]) & df[["o0", "o1", "o2"]].notna().all(axis=1) & ssum.between(1.0, 1.4)
+    df["marge_1X2_%"] = ((ssum - 1) * 100).round(1)
     return df
 
 
@@ -408,7 +411,10 @@ def selections_from_programme(prog):
     rows = []
     for _, r in prog.iterrows():
         fair = {}
+        limit = N_TOKENS if bool(r.get("ok", True)) else 6      # السطور الجزئية: 1X2 + حظ مزدوج فقط
         for g in GROUPS:
+            if max(g) >= limit:
+                continue
             odds = [r[f"o{i}"] for i in g]
             if all(_ok(o) for o in odds):
                 s = sum(1 / o for o in odds)
@@ -417,6 +423,8 @@ def selections_from_programme(prog):
         if all(i in fair for i in (0, 1, 2)):
             fair[3], fair[4], fair[5] = fair[0] + fair[1], fair[1] + fair[2], fair[0] + fair[2]
         for idx, market, sel in SELECTIONS:
+            if idx >= limit:
+                continue
             odd = r[f"o{idx}"]
             if _ok(odd):
                 rows.append({"mid": r["mid"], "date": r["date"], "time": r["time"], "league": r["league"],
@@ -670,8 +678,19 @@ def main():
             newp = parse_bytes(new_pdf.getvalue())
             if newp.empty:
                 st.error("ما قدرتش نقرا الماتشات."); return
-            st.success(f"📄 قريت {len(newp)} ماتش من {new_pdf.name} ({int(newp['ok'].sum())} كاملين)")
-            sel = selections_from_programme(newp[newp["ok"]])
+            n_ok, n_part = int(newp["ok"].sum()), int(newp["partial"].sum())
+            st.success(f"📄 قريت {len(newp)} ماتش من {new_pdf.name}: {n_ok} بقراءة كاملة، "
+                       f"{n_part} بقراءة جزئية (1X2 والحظ المزدوج فقط).")
+            with st.expander("🛠️ تشخيص قراءة الملف"):
+                st.write("عدد الأرقام لكل سطر (الكامل = 32):")
+                st.dataframe(newp["n_tokens"].value_counts().rename("عدد السطور").to_frame(), use_container_width=True)
+                st.dataframe(newp[["date", "time", "match_text", "n_tokens", "ok", "partial"]].head(10),
+                             use_container_width=True, hide_index=True)
+            sel = selections_from_programme(newp[newp["ok"] | newp["partial"]])
+            if sel.empty:
+                st.error("ما قدرتش نستخرج كوطات صالحة من هاد الملف. شوف التشخيص فوق، وصيفط لي الصورة "
+                         "ولا الملف باش نصلح القراءة.")
+                return
             t1, t2, t3 = st.tabs(["🎟️ بناء الأوراق", "📋 كل الماتشات", "🔍 أنماط الأرشيف"])
 
             with t1:
@@ -701,6 +720,7 @@ def main():
 
             with t2:
                 w = newp[["date", "time", "league", "match_text", "o0", "o1", "o2", "o15", "o16", "o30", "o31"]].copy()
+                w.loc[~newp["ok"], ["o15", "o16", "o30", "o31"]] = float("nan")
                 f1 = sel[sel["market"].isin(["1X2"])].pivot_table(index="mid", columns="selection", values="fair_p")
                 w = w.assign(mid=newp["mid"]).merge(f1.add_prefix("p_"), left_on="mid", right_index=True, how="left")
                 for c in ["p_1", "p_X", "p_2"]:
