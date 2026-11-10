@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-import io, os, re, json, math, unicodedata, datetime as dt
+import io, os, re, json, math, hashlib, unicodedata, datetime as dt
 from difflib import SequenceMatcher
 import pandas as pd
 import pdfplumber
@@ -116,9 +116,20 @@ def parse_programme(pdf_file):
     return df
 
 
-@st.cache_data(show_spinner=False)
+PARSER_VERSION = "2026-11-10-v3"
+
+
 def parse_bytes(b):
-    return parse_programme(io.BytesIO(b))
+    """يقرا الـ PDF مرة وحدة لكل جلسة. ما كنستعملش st.cache_data حيت كيحتفظ بنتائج قديمة
+    من نسخ الكود السابقة (هادا كان سبب KeyError: 'mid')."""
+    cache = st.session_state.setdefault("_parse_cache", {})
+    key = (hashlib.md5(b).hexdigest(), PARSER_VERSION)
+    if key not in cache:
+        df = parse_programme(io.BytesIO(b))
+        if not df.empty and "mid" not in df.columns:
+            df["mid"] = df["date"].astype(str) + "_" + df["terminal"].astype(str)
+        cache[key] = df
+    return cache[key].copy()
 
 
 # =====================================================================
