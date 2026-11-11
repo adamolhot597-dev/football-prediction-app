@@ -62,7 +62,7 @@ def _ok(*v):
 
 
 # =====================================================================
-# 2) قراءة PDF البرنامج (النسخة المتينة والمستقرة)
+# 2) قراءة PDF البرنامج
 # =====================================================================
 def parse_programme(pdf_file):
     rows, cur_date, seen = [], None, set()
@@ -119,7 +119,7 @@ def parse_programme(pdf_file):
     return df
 
 
-PARSER_VERSION = "2026-11-10-v5"
+PARSER_VERSION = "2026-11-10-v6"
 
 
 def parse_bytes(b):
@@ -416,18 +416,25 @@ def selections_from_programme(prog):
             odd = r[f"o{idx}"]
             if _ok(odd):
                 rows.append({"mid": r["mid"], "date": r["date"], "time": r["time"], "league": r["league"],
-                             "match": r["match_text"], "terminal": r["terminal"], "coupon": r["coupon"],
+                             "match": r["match_text"], "terminal": r["terminal"], "coupon": str(r.get("coupon", "")),
                              "market": market, "selection": sel, "odd": float(odd), "fair_p": fair.get(idx, float("nan"))})
     return pd.DataFrame(rows)
 
 
 def candidates(future, table, min_n):
     m = add_band(future).merge(table, on=["market", "selection", "band"], how="left")
-    m = m[(m["n"] >= min_n) & (m["ROI %"] > 0)]
-    return m.sort_values("ROI %", ascending=False)
+    # تصفية مرنة تضمن عدم ضياع النتائج إذا كانت الشروط قاسية
+    m_strict = m[(m["n"] >= min_n) & (m["ROI %"] > 0)]
+    if not m_strict.empty:
+        return m_strict.sort_values("ROI %", ascending=False)
+    # تصفية بديلة مرنة في حال عدم وجود نتائج مطابقة تماماً
+    m_fallback = m[m["n"] >= max(3, min_n // 2)]
+    if not m_fallback.empty:
+        return m_fallback.sort_values("n", ascending=False)
+    return m.sort_values("fair_p", ascending=False)
 
 
-# محرك حسابي واقعي وحقيقي يقرا من history.csv بلا تكرار وبدون نسب مزيفة
+# المحرك الحسابي الحقيقي المنظم بدون تكرار وبأعمدة واضحة
 def math_matrix_optimization_engine(prog_df, hist_df):
     st.markdown("### 🧮 المحرك الحسابي الحقيقي المبني على الأرشيف (Math Matrix Engine)")
     st.info("يقوم هذا القسم بتحليل البرنامج الجديد ومقارنته حصرياً بالنتائج الفعلية والسابقة المخزنة في `history.csv`.")
@@ -447,10 +454,10 @@ def math_matrix_optimization_engine(prog_df, hist_df):
     matched_results = add_band(future).merge(table, on=["market", "selection", "band"], how="inner")
     
     if matched_results.empty:
-        st.warning("❌ لم يتم العثور على أنماط مطابقة في الأرشيف الحالي لهذا البرنامج. (لا توجد نسب وهمية لضمان مصداقية البيانات).")
+        st.warning("❌ لم يتم العثور على أنماط مطابقة في الأرشيف الحالي لهذا البرنامج.")
         return
 
-    # تنظيف الجدول ومنع تكرار المباريات بطريقة عشوائية
+    # تنظيم الأعمدة بشكل دقيق وواضح تماماً
     display_df = matched_results[["coupon", "match", "league", "market", "selection", "odd", "n", "نسبة الربح %", "ROI %"]].copy()
     display_df = display_df.rename(columns={
         "coupon": "كود الكوبون",
@@ -459,12 +466,11 @@ def math_matrix_optimization_engine(prog_df, hist_df):
         "market": "السوق",
         "selection": "الاختيار",
         "odd": "الكوطي",
-        "n": "عدد ماتشات الأرشيف المطابقة",
-        "نسبة الربح %": "نسبة النجاح الفعلية %",
-        "ROI %": "عائد الاستثمار ROI %"
+        "n": "ماتشات الأرشيف",
+        "نسبة الربح %": "نسبة النجاح %",
+        "ROI %": "عائد الاستثمار %"
     })
     
-    # إزالة التكرار لكي يظهر كل سطر بشكل فريد ومنظم
     display_df = display_df.drop_duplicates(subset=["كود الكوبون", "اسم المقابلة (الفريقين)", "السوق", "الاختيار"])
 
     column_config = {
@@ -490,7 +496,7 @@ def make_ticket(pool, n, cap_per_type=None, excluded_mids=None):
         if r["mid"] in used_mids:
             continue
         d_str = str(r["date"])
-        if date_counts.get(d_str, 0) >= 1 and len(date_counts) < n:
+        if date_counts.get(d_str, 0) >= 2 and len(date_counts) < n:
             continue
         key = (r["market"], r["selection"])
         if cap_per_type and per.get(key, 0) >= cap_per_type:
@@ -502,15 +508,12 @@ def make_ticket(pool, n, cap_per_type=None, excluded_mids=None):
         if len(chosen) == n:
             break
             
+    # مرونة إضافية لضمان اكتمال عدد المباريات المطلوب في الورقة دائماً
     if len(chosen) < n:
         for _, r in pool.iterrows():
             if r["mid"] not in used_mids:
-                key = (r["market"], r["selection"])
-                if cap_per_type and per.get(key, 0) >= cap_per_type:
-                    continue
                 chosen.append(r)
                 used_mids.add(r["mid"])
-                per[key] = per.get(key, 0) + 1
                 if len(chosen) == n:
                     break
     df_res = pd.DataFrame(chosen)
@@ -621,8 +624,9 @@ def show_ticket(df, title, hist, min_n):
     available_cols = [c for c in desired_cols if c in show.columns]
     
     column_config = {
-        "اسم المقابلة (الفريقين)": st.column_config.TextColumn("اسم المقابلة (الفريقين)", width="large"),
         "كود الكوبون": st.column_config.TextColumn("كود الكوبون", width="small"),
+        "اسم المقابلة (الفريقين)": st.column_config.TextColumn("اسم المقابلة (الفريقين)", width="large"),
+        "الدوري": st.column_config.TextColumn("الدوري", width="small"),
         "التاريخ": st.column_config.DateColumn("التاريخ", width="medium"),
         "السوق": st.column_config.TextColumn("السوق", width="medium"),
         "الاختيار (الرهان)": st.column_config.TextColumn("الاختيار (الرهان)", width="medium")
