@@ -119,7 +119,7 @@ def parse_programme(pdf_file):
     return df
 
 
-PARSER_VERSION = "2026-11-10-v4"
+PARSER_VERSION = "2026-11-10-v5"
 
 
 def parse_bytes(b):
@@ -427,7 +427,7 @@ def candidates(future, table, min_n):
     return m.sort_values("ROI %", ascending=False)
 
 
-# محرك حسابي واقعي وحقيقي يقرا من history.csv بلا نسب مزيفة
+# محرك حسابي واقعي وحقيقي يقرا من history.csv بلا تكرار وبدون نسب مزيفة
 def math_matrix_optimization_engine(prog_df, hist_df):
     st.markdown("### 🧮 المحرك الحسابي الحقيقي المبني على الأرشيف (Math Matrix Engine)")
     st.info("يقوم هذا القسم بتحليل البرنامج الجديد ومقارنته حصرياً بالنتائج الفعلية والسابقة المخزنة في `history.csv`.")
@@ -442,7 +442,6 @@ def math_matrix_optimization_engine(prog_df, hist_df):
 
     st.success(f"✅ الأرشيف الحقيقي متوفر ويحتوي على سجلات دقيقة. جاري مطابقة الأسطر العرضية...")
     
-    # حساب حقيقي من الأرشيف
     table = hit_table(hist_df)
     future = selections_from_programme(prog_df)
     matched_results = add_band(future).merge(table, on=["market", "selection", "band"], how="inner")
@@ -451,8 +450,10 @@ def math_matrix_optimization_engine(prog_df, hist_df):
         st.warning("❌ لم يتم العثور على أنماط مطابقة في الأرشيف الحالي لهذا البرنامج. (لا توجد نسب وهمية لضمان مصداقية البيانات).")
         return
 
-    display_df = matched_results[["match", "league", "market", "selection", "odd", "n", "نسبة الربح %", "ROI %"]].copy()
+    # تنظيف الجدول ومنع تكرار المباريات بطريقة عشوائية
+    display_df = matched_results[["coupon", "match", "league", "market", "selection", "odd", "n", "نسبة الربح %", "ROI %"]].copy()
     display_df = display_df.rename(columns={
+        "coupon": "كود الكوبون",
         "match": "اسم المقابلة (الفريقين)",
         "league": "الدوري",
         "market": "السوق",
@@ -463,8 +464,13 @@ def math_matrix_optimization_engine(prog_df, hist_df):
         "ROI %": "عائد الاستثمار ROI %"
     })
     
+    # إزالة التكرار لكي يظهر كل سطر بشكل فريد ومنظم
+    display_df = display_df.drop_duplicates(subset=["كود الكوبون", "اسم المقابلة (الفريقين)", "السوق", "الاختيار"])
+
     column_config = {
+        "كود الكوبون": st.column_config.TextColumn("كود الكوبون", width="small"),
         "اسم المقابلة (الفريقين)": st.column_config.TextColumn("اسم المقابلة (الفريقين)", width="large"),
+        "الدوري": st.column_config.TextColumn("الدوري", width="small"),
         "السوق": st.column_config.TextColumn("السوق", width="medium"),
         "الاختيار": st.column_config.TextColumn("الاختيار", width="medium")
     }
