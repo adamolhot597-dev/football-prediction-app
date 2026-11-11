@@ -119,7 +119,7 @@ def parse_programme(pdf_file):
     return df
 
 
-PARSER_VERSION = "2026-11-10-v6"
+PARSER_VERSION = "2026-11-10-v7"
 
 
 def parse_bytes(b):
@@ -415,26 +415,25 @@ def selections_from_programme(prog):
                 continue
             odd = r[f"o{idx}"]
             if _ok(odd):
-                rows.append({"mid": r["mid"], "date": r["date"], "time": r["time"], "league": r["league"],
-                             "match": r["match_text"], "terminal": r["terminal"], "coupon": str(r.get("coupon", "")),
-                             "market": market, "selection": sel, "odd": float(odd), "fair_p": fair.get(idx, float("nan"))})
+                rows.append({"mid": r["mid"], "date": r["date"], "time": r["time"], "league": str(r.get("league", "")),
+                             "match": str(r.get("match_text", "")), "terminal": str(r.get("terminal", "")),
+                             "coupon": str(r.get("coupon", "")), "market": str(market), "selection": str(sel),
+                             "odd": float(odd), "fair_p": fair.get(idx, float("nan"))})
     return pd.DataFrame(rows)
 
 
 def candidates(future, table, min_n):
     m = add_band(future).merge(table, on=["market", "selection", "band"], how="left")
-    # تصفية مرنة تضمن عدم ضياع النتائج إذا كانت الشروط قاسية
     m_strict = m[(m["n"] >= min_n) & (m["ROI %"] > 0)]
     if not m_strict.empty:
         return m_strict.sort_values("ROI %", ascending=False)
-    # تصفية بديلة مرنة في حال عدم وجود نتائج مطابقة تماماً
     m_fallback = m[m["n"] >= max(3, min_n // 2)]
     if not m_fallback.empty:
         return m_fallback.sort_values("n", ascending=False)
     return m.sort_values("fair_p", ascending=False)
 
 
-# المحرك الحسابي الحقيقي المنظم بدون تكرار وبأعمدة واضحة
+# المحرك الحسابي الحقيقي المنظم بأعمدة واضحة وصحيحة 100%
 def math_matrix_optimization_engine(prog_df, hist_df):
     st.markdown("### 🧮 المحرك الحسابي الحقيقي المبني على الأرشيف (Math Matrix Engine)")
     st.info("يقوم هذا القسم بتحليل البرنامج الجديد ومقارنته حصرياً بالنتائج الفعلية والسابقة المخزنة في `history.csv`.")
@@ -457,28 +456,29 @@ def math_matrix_optimization_engine(prog_df, hist_df):
         st.warning("❌ لم يتم العثور على أنماط مطابقة في الأرشيف الحالي لهذا البرنامج.")
         return
 
-    # تنظيم الأعمدة بشكل دقيق وواضح تماماً
+    # ترتيب الأعمدة بشكل قطعي وصحيح تماماً يمنع أي تداخل أو حروف مبهمة
     display_df = matched_results[["coupon", "match", "league", "market", "selection", "odd", "n", "نسبة الربح %", "ROI %"]].copy()
     display_df = display_df.rename(columns={
         "coupon": "كود الكوبون",
         "match": "اسم المقابلة (الفريقين)",
         "league": "الدوري",
-        "market": "السوق",
-        "selection": "الاختيار",
-        "odd": "الكوطي",
+        "market": "السوق المقترح",
+        "selection": "الرهان المطلوب (الاختيار)",
+        "odd": "سعر الكوطي",
         "n": "ماتشات الأرشيف",
         "نسبة الربح %": "نسبة النجاح %",
         "ROI %": "عائد الاستثمار %"
     })
     
-    display_df = display_df.drop_duplicates(subset=["كود الكوبون", "اسم المقابلة (الفريقين)", "السوق", "الاختيار"])
+    display_df = display_df.drop_duplicates(subset=["كود الكوبون", "اسم المقابلة (الفريقين)", "السوق المقترح", "الرهان المطلوب (الاختيار)"])
 
     column_config = {
         "كود الكوبون": st.column_config.TextColumn("كود الكوبون", width="small"),
         "اسم المقابلة (الفريقين)": st.column_config.TextColumn("اسم المقابلة (الفريقين)", width="large"),
         "الدوري": st.column_config.TextColumn("الدوري", width="small"),
-        "السوق": st.column_config.TextColumn("السوق", width="medium"),
-        "الاختيار": st.column_config.TextColumn("الاختيار", width="medium")
+        "السوق المقترح": st.column_config.TextColumn("السوق المقترح", width="medium"),
+        "الرهان المطلوب (الاختيار)": st.column_config.TextColumn("الرهان المطلوب (الاختيار)", width="medium"),
+        "سعر الكوطي": st.column_config.NumberColumn("سعر الكوطي", format="%.2f")
     }
     
     st.dataframe(display_df, use_container_width=True, hide_index=True, column_config=column_config)
@@ -508,7 +508,6 @@ def make_ticket(pool, n, cap_per_type=None, excluded_mids=None):
         if len(chosen) == n:
             break
             
-    # مرونة إضافية لضمان اكتمال عدد المباريات المطلوب في الورقة دائماً
     if len(chosen) < n:
         for _, r in pool.iterrows():
             if r["mid"] not in used_mids:
@@ -610,9 +609,9 @@ def show_ticket(df, title, hist, min_n):
     
     rename_dict = {
         "match": "اسم المقابلة (الفريقين)",
-        "market": "السوق",
-        "selection": "الاختيار (الرهان)",
-        "odd": "الكوطي",
+        "market": "السوق المقترح",
+        "selection": "الرهان المطلوب (الاختيار)",
+        "odd": "سعر الكوطي",
         "league": "الدوري",
         "date": "التاريخ",
         "time": "التوقيت",
@@ -620,7 +619,7 @@ def show_ticket(df, title, hist, min_n):
     }
     show = show.rename(columns=rename_dict)
     
-    desired_cols = ["كود الكوبون", "اسم المقابلة (الفريقين)", "التاريخ", "التوقيت", "الدوري", "السوق", "الاختيار (الرهان)", "الكوطي", "احتمال الشركة الصافي %", "ماتشات الأرشيف", "ربح الأرشيف %"]
+    desired_cols = ["كود الكوبون", "اسم المقابلة (الفريقين)", "التاريخ", "التوقيت", "الدوري", "السوق المقترح", "الرهان المطلوب (الاختيار)", "سعر الكوطي", "احتمال الشركة الصافي %", "ماتشات الأرشيف", "ربح الأرشيف %"]
     available_cols = [c for c in desired_cols if c in show.columns]
     
     column_config = {
@@ -628,8 +627,9 @@ def show_ticket(df, title, hist, min_n):
         "اسم المقابلة (الفريقين)": st.column_config.TextColumn("اسم المقابلة (الفريقين)", width="large"),
         "الدوري": st.column_config.TextColumn("الدوري", width="small"),
         "التاريخ": st.column_config.DateColumn("التاريخ", width="medium"),
-        "السوق": st.column_config.TextColumn("السوق", width="medium"),
-        "الاختيار (الرهان)": st.column_config.TextColumn("الاختيار (الرهان)", width="medium")
+        "السوق المقترح": st.column_config.TextColumn("السوق المقترح", width="medium"),
+        "الرهان المطلوب (الاختيار)": st.column_config.TextColumn("الرهان المطلوب (الاختيار)", width="medium"),
+        "سعر الكوطي": st.column_config.NumberColumn("سعر الكوطي", format="%.2f")
     }
     
     st.dataframe(show[available_cols], use_container_width=True, hide_index=True, column_config=column_config)
