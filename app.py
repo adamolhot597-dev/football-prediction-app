@@ -62,7 +62,7 @@ def _ok(*v):
 
 
 # =====================================================================
-# 2) قراءة PDF البرنامج
+# 2) قراءة PDF البرنامج (النسخة المتينة والمستقرة)
 # =====================================================================
 def parse_programme(pdf_file):
     rows, cur_date, seen = [], None, set()
@@ -119,7 +119,7 @@ def parse_programme(pdf_file):
     return df
 
 
-PARSER_VERSION = "2026-11-10-v3"
+PARSER_VERSION = "2026-11-10-v4"
 
 
 def parse_bytes(b):
@@ -134,7 +134,7 @@ def parse_bytes(b):
 
 
 # =====================================================================
-# 3) جلب النتائج والتحليل الرياضي المتقدم (H2H + Form لآخر 5 مباريات)
+# 3) جلب النتائج والتحليل الرياضي الحقيقي
 # =====================================================================
 AF_BASE = "https://v3.football.api-sports.io"
 FD_BASE = "https://api.football-data.org/v4"
@@ -321,17 +321,6 @@ def apply_pasted(res, text, threshold=0.55):
     return res, applied
 
 
-# نظام التخزين المؤقت للتحليل المزدوج (H2H و Form لآخر 5 مباريات) لحماية الموارد
-@st.cache_data(ttl=86400, show_spinner=False)
-def get_recent_form_and_h2h(team_name, api_key):
-    if not api_key:
-        return {"scored_avg": 1.3, "conceded_avg": 1.1, "form_score": 0.6}
-    try:
-        return {"scored_avg": 1.4, "conceded_avg": 1.0, "form_score": 0.7}
-    except Exception:
-        return {"scored_avg": 1.2, "conceded_avg": 1.2, "form_score": 0.5}
-
-
 # =====================================================================
 # 4) حساب الكوطات الرابحة
 # =====================================================================
@@ -379,16 +368,8 @@ def build_history(prog, res):
     return pd.DataFrame(rows)
 
 
-def winning_summary(sel):
-    keep = ["1X2", "حظ مزدوج", "M/P 2.5", "M/P 3.5", "BTTS"]
-    w = sel[(sel["won"] == True) & (sel["market"].isin(keep))]
-    t = (w["market"] + ":" + w["selection"] + "@" + w["odd"].map("{:.2f}".format)).groupby(w["mid"]).apply(" | ".join)
-    base = sel.drop_duplicates("mid").set_index("mid")[["date", "league", "match", "score"]]
-    return base.join(t.rename("الكوطات الرابحة")).reset_index(drop=True)
-
-
 # =====================================================================
-# 5) التحليل و القسم الجديد: محرك العمليات الحسابية (Math Matrix Engine)
+# 5) التحليل الحقيقي المبني حصرياً على الأرشيف (Math Matrix Engine الحقيقي)
 # =====================================================================
 BANDS = [1.0, 1.2, 1.4, 1.7, 2.0, 2.5, 3.0, 4.0, 6.0, 10.0, 1000]
 BAND_LABELS = ["<1.20", "1.20-1.39", "1.40-1.69", "1.70-1.99", "2.00-2.49", "2.50-2.99",
@@ -435,8 +416,8 @@ def selections_from_programme(prog):
             odd = r[f"o{idx}"]
             if _ok(odd):
                 rows.append({"mid": r["mid"], "date": r["date"], "time": r["time"], "league": r["league"],
-                             "match": r["match_text"], "market": market, "selection": sel,
-                             "odd": float(odd), "fair_p": fair.get(idx, float("nan"))})
+                             "match": r["match_text"], "terminal": r["terminal"], "coupon": r["coupon"],
+                             "market": market, "selection": sel, "odd": float(odd), "fair_p": fair.get(idx, float("nan"))})
     return pd.DataFrame(rows)
 
 
@@ -446,62 +427,49 @@ def candidates(future, table, min_n):
     return m.sort_values("ROI %", ascending=False)
 
 
-# محرك البحث الحسابي المتقدم (Math Matrix Engine) المرتبط بالنتائج الحقيقية من history.csv
+# محرك حسابي واقعي وحقيقي يقرا من history.csv بلا نسب مزيفة
 def math_matrix_optimization_engine(prog_df, hist_df):
-    st.markdown("### 🧮 محرك العمليات الحسابية المتقدم (Math Matrix Engine)")
-    st.info("يقوم هذا المحرك بربط الكوطات العرضية للبرنامج الجديد بـ الأرشيف الحقيقي للنتائج المحفوظة (`history.csv`) لتجريب المعادلات واستخراج النسبة الفعلية للنجاح.")
+    st.markdown("### 🧮 المحرك الحسابي الحقيقي المبني على الأرشيف (Math Matrix Engine)")
+    st.info("يقوم هذا القسم بتحليل البرنامج الجديد ومقارنته حصرياً بالنتائج الفعلية والسابقة المخزنة في `history.csv`.")
     
     if hist_df.empty:
-        st.warning("⚠️ الأرشيف الحقيقي فارغ! يرجى أولاً إدخال الأرشيف ونتائجه الحقيقية في القسم الأول لكي يتمكن هذا المحرك من دراستها ومقارنتها.")
+        st.warning("⚠️ الأرشيف فارغ حالياً! قم برفع الأرشيف ونتائجه الحقيقية في القسم الأول أولاً لكي يستطيع المحرك قراءتها.")
         return
         
     if prog_df.empty:
-        st.warning("الرجاء رفع برنامج (PDF) جديد في هذا القسم لتطبيق المعادلات واستخراج التوقعات.")
+        st.warning("الرجاء رفع برنامج رهانات جديد (PDF) في هذا القسم لبدء الاختبار والفحص.")
         return
 
-    st.success(f"✅ تم تحميل الأرشيف بنجاح ({hist_df['mid'].nunique()} مباراة تاريخية مسجلة). جاري تحليل وتقاطع المعاملات الحسابية مع النتائج الفعلية...")
+    st.success(f"✅ الأرشيف الحقيقي متوفر ويحتوي على سجلات دقيقة. جاري مطابقة الأسطر العرضية...")
+    
+    # حساب حقيقي من الأرشيف
+    table = hit_table(hist_df)
+    future = selections_from_programme(prog_df)
+    matched_results = add_band(future).merge(table, on=["market", "selection", "band"], how="inner")
+    
+    if matched_results.empty:
+        st.warning("❌ لم يتم العثور على أنماط مطابقة في الأرشيف الحالي لهذا البرنامج. (لا توجد نسب وهمية لضمان مصداقية البيانات).")
+        return
 
-    # تطبيق معادلات حسابية واقعية واختبارها مطابقةً مع النتائج الحقيقية في الأرشيف
-    results = []
-    
-    # 1) اختبار نموذج مجموع مقلوب الكوطات (1 / Odd Sum)
-    results.append({
-        "العملية الحسابية": "مجموع مقلوب الكوطات (1 / Odd Sum)",
-        "عدد المباريات المختبرة": len(hist_df),
-        "الدقة الفعلية من الأرشيف": "91.8%",
-        "الحالة والتوصية": "مؤكدة وعالية الموثوقية"
+    display_df = matched_results[["match", "league", "market", "selection", "odd", "n", "نسبة الربح %", "ROI %"]].copy()
+    display_df = display_df.rename(columns={
+        "match": "اسم المقابلة (الفريقين)",
+        "league": "الدوري",
+        "market": "السوق",
+        "selection": "الاختيار",
+        "odd": "الكوطي",
+        "n": "عدد ماتشات الأرشيف المطابقة",
+        "نسبة الربح %": "نسبة النجاح الفعلية %",
+        "ROI %": "عائد الاستثمار ROI %"
     })
     
-    # 2) اختبار نموذج الضرب الترافقي
-    results.append({
-        "العملية الحسابية": "الضرب الترافقي (Odd_1 * Odd_X / 2)",
-        "عدد المباريات المختبرة": len(hist_df),
-        "الدقة الفعلية من الأرشيف": "88.4%",
-        "الحالة والتوصية": "جيدة للاستخدام الاحتياطي"
-    })
+    column_config = {
+        "اسم المقابلة (الفريقين)": st.column_config.TextColumn("اسم المقابلة (الفريقين)", width="large"),
+        "السوق": st.column_config.TextColumn("السوق", width="medium"),
+        "الاختيار": st.column_config.TextColumn("الاختيار", width="medium")
+    }
     
-    # 3) اختبار معامل الانحراف العرضي
-    results.append({
-        "العملية الحسابية": "معامل الانحراف العرضي للسطر",
-        "عدد المباريات المختبرة": len(hist_df),
-        "الدقة الفعلية من الأرشيف": "93.5%",
-        "الحالة والتوصية": "ممتازة لاكتشاف الثغرات"
-    })
-
-    st.markdown("#### 📊 نتائج مطابقة المعادلات مع الأرشيف الحقيقي:")
-    st.dataframe(pd.DataFrame(results), use_container_width=True, hide_index=True)
-    
-    st.markdown("#### 🎯 المقابلات المرشحة بناءً على مطابقة الأرشيف الحقيقي:")
-    # عرض مبسط للمباريات القابلة للتطبيق من البرنامج الحالي
-    sample_picks = prog_df.head(10).copy()
-    if not sample_picks.empty:
-        display_picks = sample_picks[["date", "league", "match_text"]].rename(columns={
-            "date": "التاريخ",
-            "league": "الدوري",
-            "match_text": "اسم المقابلة (الفريقين)"
-        })
-        display_picks["التحليل الرياضي"] = "مطابق لنموذج الانحراف (دقة 93.5%)"
-        st.dataframe(display_picks, use_container_width=True, hide_index=True)
+    st.dataframe(display_df, use_container_width=True, hide_index=True, column_config=column_config)
 
 
 def make_ticket(pool, n, cap_per_type=None, excluded_mids=None):
@@ -638,15 +606,17 @@ def show_ticket(df, title, hist, min_n):
         "odd": "الكوطي",
         "league": "الدوري",
         "date": "التاريخ",
-        "time": "التوقيت"
+        "time": "التوقيت",
+        "coupon": "كود الكوبون"
     }
     show = show.rename(columns=rename_dict)
     
-    desired_cols = ["اسم المقابلة (الفريقين)", "التاريخ", "التوقيت", "الدوري", "السوق", "الاختيار (الرهان)", "الكوطي", "احتمال الشركة الصافي %", "ماتشات الأرشيف", "ربح الأرشيف %"]
+    desired_cols = ["كود الكوبون", "اسم المقابلة (الفريقين)", "التاريخ", "التوقيت", "الدوري", "السوق", "الاختيار (الرهان)", "الكوطي", "احتمال الشركة الصافي %", "ماتشات الأرشيف", "ربح الأرشيف %"]
     available_cols = [c for c in desired_cols if c in show.columns]
     
     column_config = {
         "اسم المقابلة (الفريقين)": st.column_config.TextColumn("اسم المقابلة (الفريقين)", width="large"),
+        "كود الكوبون": st.column_config.TextColumn("كود الكوبون", width="small"),
         "التاريخ": st.column_config.DateColumn("التاريخ", width="medium"),
         "السوق": st.column_config.TextColumn("السوق", width="medium"),
         "الاختيار (الرهان)": st.column_config.TextColumn("الاختيار (الرهان)", width="medium")
@@ -681,7 +651,7 @@ def main():
     st.sidebar.header("🎯 قائمة التحكم")
     mode = st.sidebar.radio("اختر القسم:", ["📥 رفع الأرشيف والتعلم التلقائي",
                                             "🧠 فحص البرنامج الجديد واكتشاف النمط",
-                                            "🧮 المحرك الحسابي المتقدم (Math Matrix)",
+                                            "🧮 المحرك الحسابي الحقيقي (Math Matrix)",
                                             "⚙️ ربط API النتائج (API-Football)"])
     st.sidebar.metric("ماتشات فالأرشيف", hist["mid"].nunique() if not hist.empty else 0)
     st.sidebar.metric("ماتشات فالانتظار", len(pend))
@@ -702,7 +672,6 @@ def main():
                 pend, clean_pending(pd.read_csv(io.BytesIO(raw), dtype={"terminal": str, "coupon": str})))
             save_pending(st.session_state.pending)
         st.rerun()
-    st.sidebar.caption("Streamlit Cloud كيمسح الملفات مللي تعاود النشر، فحمّل النسخ الاحتياطية بين وقت وآخر.")
 
     # ============================================================= القسم 1: رفع الأرشيف
     if mode.startswith("📥"):
@@ -838,9 +807,9 @@ def main():
                         st.markdown("---")
                         show_ticket(high_risk_ticket, "3) ورقة بكوطات كبيرة (6 مباريات مغامرة)", hist, min_n)
 
-    # ============================================================= القسم 3: المحرك الحسابي المعزول والمدعوم بالأرشيف
+    # ============================================================= القسم 3: المحرك الحسابي الحقيقي
     elif mode.startswith("🧮"):
-        prog_file = st.file_uploader("📂 ارفع برنامج الرهانات للتحليل الحسابي (PDF):", type=["pdf"], key="math_prog_pdf")
+        prog_file = st.file_uploader("📂 ارفع برنامج الرهانات للتحليل الحسابي الحقيقي (PDF):", type=["pdf"], key="math_prog_pdf")
         prog_df = parse_bytes(prog_file.getvalue()) if prog_file else pd.DataFrame()
         math_matrix_optimization_engine(prog_df, st.session_state.hist)
 
