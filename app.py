@@ -1311,9 +1311,9 @@ def render_math_matrix(prog):
 
 
 def main():
-    st.set_page_config(page_title="منصة تحليل وتعلم كوطات MDJS", page_icon="⚽", layout="wide")
+    st.set_page_config(page_title="System Diagnostics & Logs", page_icon="⚙️", layout="wide")
     st.markdown(TABLE_CSS, unsafe_allow_html=True)
-    st.title("⚽ محرك الهندسة العكسية والتعلم الذكي (MDJS)")
+    st.title("System Diagnostics & Database Logs")
     st.markdown("---")
 
     if "hist" not in st.session_state:
