@@ -686,10 +686,34 @@ def vs_text(r):
 # =====================================================================
 # 9) أنماط الأرشيف + Value Bet Filter + الأوراق
 # =====================================================================
-def pattern_table(hist, min_n):
+
+BAND_LO = dict(zip(BAND_LABELS, BANDS[:-1]))
+
+
+def trap_flag(rate, imp, roi):
+    """تحذير الفخ: النمط اللي تاريخيا كيخسر ولا نجاحو أقل من اللي كيوحي بيه الكوط."""
+    if roi <= -10 or rate < imp - 3:
+        return "⚠️ فخ محتمل"
+    if roi >= 5:
+        return "✅ ROI موجب"
+    return "—"
+
+
+def upcoming_only(df, margin_min=10):
+    """يخلي غير الماتشات اللي مازال ما بداوش (بتوقيت المغرب)."""
+    if df is None or df.empty:
+        return df
+    lim = now_ma() + dt.timedelta(minutes=margin_min)
+    ko = [dt.datetime.combine(d, dt.datetime.strptime(t, "%H:%M").time()) for d, t in zip(df["date"], df["time"])]
+    return df[[k > lim for k in ko]]
+
+
+def pattern_table(hist, min_n, min_odd=0.0, sort_by="ROI %"):
     t = hit_table(hist)
-    t = t[(t["n"] >= min_n) & (t["market"] != "هانديكاب")].copy()
-    return t.sort_values(["نسبة الربح %", "n"], ascending=False).reset_index(drop=True)
+    t["lo"] = t["band"].astype(str).map(BAND_LO)
+    t = t[(t["n"] >= min_n) & (t["market"] != "هانديكاب") & (t["lo"] >= min_odd - 1e-9)].copy()
+    t["تحذير"] = [trap_flag(r, i, roi) for r, i, roi in zip(t["نسبة الربح %"], t["توقع الكوط %"], t["ROI %"])]
+    return t.sort_values([sort_by, "n"], ascending=False).reset_index(drop=True)
 
 
 def matches_for_pattern(future, market, selection, band):
@@ -698,11 +722,15 @@ def matches_for_pattern(future, market, selection, band):
     return m.sort_values(["date", "time"])
 
 
-def strict_pool(future, table, min_n, min_rate, odd_lo, odd_hi):
+
+def strict_pool(future, table, min_n, min_rate, odd_lo, odd_hi, need_roi=False):
     f = add_band(future).merge(table, on=["market", "selection", "band"], how="inner")
     f = f[(f["n"] >= min_n) & (f["نسبة الربح %"] >= min_rate) & (f["market"] != "هانديكاب")
           & f["odd"].between(odd_lo, odd_hi)].copy()
-    f["score"] = [wilson_lb(h, n) for h, n in zip(f["hits"], f["n"])]
+    if need_roi:
+        f = f[f["ROI %"] > 0]
+    f["edge"] = [(wilson_lb(h, n) - 1 / o) * 100 for h, n, o in zip(f["hits"], f["n"], f["odd"])]
+    f["score"] = f["edge"]
     return f.sort_values(["score", "n"], ascending=False)
 
 
@@ -720,12 +748,15 @@ def build_ticket(pool, n, cap_per_type, excluded):
     return pd.DataFrame(chosen)
 
 
+
 def ticket_display(t):
     return pd.DataFrame({
         "كود الكوبون": t["coupon"], "كود الجهاز": t["terminal"], "التاريخ": t["date"].map(day_label),
         "الساعة": t["time"], "الدوري": t["league"].map(league_name), "المقابلة": t.apply(vs_text, axis=1),
         "الرهان المطلوب": [pick_label(m, s) for m, s in zip(t["market"], t["selection"])],
-        "الكوط": t["odd"], "ماتشات الأرشيف": t["n"].astype(int), "نجاح الأرشيف %": t["نسبة الربح %"]})
+        "الكوط": t["odd"], "ماتشات الأرشيف": t["n"].astype(int), "نجاح الأرشيف %": t["نسبة الربح %"],
+        "ROI الأرشيف %": t["ROI %"],
+        "تحذير": [trap_flag(r, i, roi) for r, i, roi in zip(t["نسبة الربح %"], t["توقع الكوط %"], t["ROI %"])]})
 
 
 # =====================================================================
@@ -802,7 +833,7 @@ def formula_text(op, i, j, k):
             "margin2": f"1/({a}) + 1/({b})"}[op]
 
 
-def mm_search(hist, train_frac, min_train, min_test):
+def mm_search(hist, train_frac, min_train, min_test, odd_lo=1.0, odd_hi=1000.0, targets=None):
     odds, y, dates = wide_from_long(hist, with_outcome=True)
     order = np.argsort(dates.astype(str).values, kind="stable")
     O, Y = odds.values[order], y.values[order]
@@ -826,8 +857,13 @@ def mm_search(hist, train_frac, min_train, min_test):
     M = np.vstack(rows)
     Mtr, Mte = M[:, tr], M[:, te]
     parts = []
+    allowed_t = set(targets) if targets else set(MM_ORDER)
     for ti, tk in enumerate(MM_ORDER):
-        valid = (~np.isnan(Y[:, ti])) & (~np.isnan(O[:, ti]))
+        if tk not in allowed_t:
+            continue
+        with np.errstate(all="ignore"):
+            in_rng = (O[:, ti] >= odd_lo) & (O[:, ti] <= odd_hi)
+        valid = (~np.isnan(Y[:, ti])) & (~np.isnan(O[:, ti])) & in_rng
         H = (Y[:, ti] == 1) & valid
         R = np.where(H, O[:, ti] - 1.0, np.where(valid, -1.0, 0.0))
         v_tr, v_te = valid[tr].astype(np.float32), valid[te].astype(np.float32)
@@ -838,10 +874,12 @@ def mm_search(hist, train_frac, min_train, min_test):
         if len(idx) == 0:
             continue
         base_te = H[te].sum() / max(valid[te].sum(), 1)
+        o_te = np.where(valid[te], O[te, ti], 0.0).astype(np.float32)
+        avg_te = (Mte @ o_te) / np.maximum(n2, 1)
         parts.append(pd.DataFrame({
             "rule": idx, "target": tk, "n_tr": n1[idx].astype(int), "h_tr": h1[idx] / n1[idx],
             "roi_tr": r1[idx] / n1[idx], "n_te": n2[idx].astype(int), "h_te": h2[idx] / np.maximum(n2[idx], 1),
-            "roi_te": r2[idx] / np.maximum(n2[idx], 1), "base_te": base_te}))
+            "roi_te": r2[idx] / np.maximum(n2[idx], 1), "base_te": base_te, "avg_te": avg_te[idx]}))
     if not parts:
         return pd.DataFrame(), {"matches": n, "formulas": len(forms), "rules": len(rows)}, forms
     res = pd.concat(parts, ignore_index=True)
@@ -859,15 +897,15 @@ def mm_search(hist, train_frac, min_train, min_test):
     return res, info, forms
 
 
+
 def mm_verdict(r, target):
-    both = min(r["h_tr"], r["h_te"]) * 100 >= target
-    if both and r["lift"] >= 3 and r["roi_te"] > 0:
-        return "✅ صامدة ورابحة"
-    if both and r["lift"] >= 3:
-        return "⚠️ نجاح عالي لكن ROI سالب"
-    if both:
-        return "⚠️ نجاح عالي = النسبة العامة (ما كاينش نمط)"
-    return "❌ ما صمدتش فالاختبار"
+    if r["roi_tr"] > 0 and r["roi_te"] > 0 and r["lift"] >= 3:
+        return "✅ صامدة ورابحة (فالأرشيف)"
+    if r["roi_te"] > 0:
+        return "⚠️ ROI موجب فالاختبار فقط (احتمال صدفة)"
+    if min(r["h_tr"], r["h_te"]) * 100 >= target:
+        return "⚠️ نجاح بلا ربح"
+    return "❌ فخ محتمل (ما صمدتش)"
 
 
 # =====================================================================
@@ -1029,32 +1067,54 @@ def hf_analyze(r, token, directory):
 # =====================================================================
 # 12) الواجهة
 # =====================================================================
-def get_keys():
-    keys = {"af": str(st.session_state.get("api_key", "")).strip(), "fd": str(st.session_state.get("fd_key", "")).strip()}
+
+KEYS_PATH = os.path.join(DATA_DIR, "keys.json")
+
+
+def load_keys_file():
     try:
-        keys["af"] = keys["af"] or str(st.secrets.get("API_FOOTBALL_KEY", "")).strip()
-        keys["fd"] = keys["fd"] or str(st.secrets.get("FOOTBALL_DATA_KEY", "")).strip()
+        d = json.load(open(KEYS_PATH, encoding="utf-8"))
+        return {"af": str(d.get("af", "")).strip(), "fd": str(d.get("fd", "")).strip()}
+    except Exception:
+        return {"af": "", "fd": ""}
+
+
+def save_keys_file(keys):
+    os.makedirs(DATA_DIR, exist_ok=True)
+    json.dump(keys, open(KEYS_PATH, "w", encoding="utf-8"))
+
+
+def get_keys():
+    """المفاتيح كتبقى فالجلسة (حتى إيلا بدلتي القسم) وفملف على السيرفر، و Secrets إيلا كانو."""
+    k = dict(st.session_state.get("_keys") or {"af": "", "fd": ""})
+    try:
+        k["af"] = k.get("af") or str(st.secrets.get("API_FOOTBALL_KEY", "")).strip()
+        k["fd"] = k.get("fd") or str(st.secrets.get("FOOTBALL_DATA_KEY", "")).strip()
     except Exception:
         pass
-    return keys
+    return k
+
 
 
 def render_patterns(future, hist):
     if hist.empty:
         st.warning("الأرشيف خاوي. ابدا بالقسم الأول وزيد ماتشات بنتائجها.")
         return
-    min_n = st.slider("أقل عدد ماتشات فالأرشيف باش النمط يتحسب:", 5, 60, 13, key="pat_min_n")
-    pt = pattern_table(hist, min_n)
+    c1, c2, c3 = st.columns(3)
+    min_n = c1.slider("أقل عدد ماتشات فالأرشيف:", 5, 60, 13, key="pat_min_n")
+    min_odd = c2.slider("أقل كوط للنمط (باش نتفاداو الكوط القصيرة):", 1.0, 4.0, 1.40, 0.1, key="pat_min_odd")
+    sort_by = c3.radio("رتب حسب:", ["ROI %", "نسبة الربح %"], horizontal=True, key="pat_sort")
+    pt = pattern_table(hist, min_n, min_odd, sort_by)
     if pt.empty:
-        st.warning("ما كاين حتى نمط فيه هاد العدد من الماتشات. نقص الرقم.")
+        st.warning("ما كاين حتى نمط بهاد الشروط. نقص 'أقل عدد ماتشات' ولا 'أقل كوط'.")
         return
     st.caption("كيفاش تقرا الجدول: **فئة الكوط** = مجال السعر، **عدد ماتشات الأرشيف** = شحال مرة تكرر هاد النمط، "
                "**عدد مرات النجاح** = شحال مرة ربح، **نسبة الربح** = النجاح ÷ التكرار، **توقع الشركة** = اللي كيوحي بيه السعر، "
-               "**ROI** = الربح/الخسارة لكل 100 درهم (سالب = خسارة).")
+               "**ROI** = الربح/الخسارة لكل 100 درهم (سالب = خسارة). **⚠️ فخ محتمل** = نمط كيخسر تاريخيا ولا نجاحو أقل من اللي كيوحي بيه الكوط.")
     disp = pt.rename(columns={"market": "السوق", "selection": "الرهان", "band": "فئة الكوط",
                               "n": "عدد ماتشات الأرشيف", "hits": "عدد مرات النجاح", "توقع الكوط %": "توقع الشركة %"})
     html_table(disp[["السوق", "الرهان", "فئة الكوط", "عدد ماتشات الأرشيف", "عدد مرات النجاح", "نسبة الربح %",
-                     "توقع الشركة %", "ROI %"]].head(80),
+                     "توقع الشركة %", "ROI %", "تحذير"]].head(80),
                fmt={"نسبة الربح %": "{:.1f}%", "توقع الشركة %": "{:.1f}%", "ROI %": "{:+.1f}%",
                     "عدد ماتشات الأرشيف": "{:.0f}", "عدد مرات النجاح": "{:.0f}"}, max_height=420)
 
@@ -1062,7 +1122,8 @@ def render_patterns(future, hist):
     top = pt.head(20)
     cols = st.columns(4)
     for i, (_, r) in enumerate(top.iterrows()):
-        label = f"{r['نسبة الربح %']:.1f}% · {r['market']} {r['selection']} · {r['band']} ({int(r['hits'])}/{int(r['n'])})"
+        label = (f"{r['نسبة الربح %']:.0f}% · ROI {r['ROI %']:+.0f}% · {r['market']} {r['selection']} · "
+                 f"{r['band']} ({int(r['hits'])}/{int(r['n'])})")
         if cols[i % 4].button(label, key=f"vb_{i}"):
             st.session_state.vb_pat = (r["market"], r["selection"], str(r["band"]))
     pat = st.session_state.get("vb_pat")
@@ -1072,13 +1133,13 @@ def render_patterns(future, hist):
     row = pt[(pt["market"] == pat[0]) & (pt["selection"] == pat[1]) & (pt["band"].astype(str) == pat[2])]
     st.success(f"النمط المختار: **{pick_label(pat[0], pat[1])}** | فئة الكوط **{pat[2]}**"
                + (f" | نجح {int(row.iloc[0]['hits'])} من {int(row.iloc[0]['n'])} ({row.iloc[0]['نسبة الربح %']:.1f}%)"
-                  if not row.empty else ""))
+                  f" | ROI {row.iloc[0]['ROI %']:+.1f}% {row.iloc[0]['تحذير']}" if not row.empty else ""))
     if st.button("✖ مسح الاختيار", key="vb_clear"):
         st.session_state.pop("vb_pat", None)
         st.rerun()
     m = matches_for_pattern(future, *pat)
     if m.empty:
-        st.info("ما كاين حتى ماتش فالبرنامج الجديد كيطابق هاد النمط.")
+        st.info("ما كاين حتى ماتش جاي فالبرنامج الجديد كيطابق هاد النمط.")
         return
     for d, g in m.groupby("date"):
         st.markdown(f"**📅 {day_label(d)}** — {len(g)} ماتش")
@@ -1122,19 +1183,25 @@ def show_ticket(t, title, key):
         html_table(pd.DataFrame(got), fmt={"الكوط": "{:.2f}"}, max_height=360)
 
 
+
 def render_tickets(future, hist):
     if hist.empty:
         st.warning("الأرشيف خاوي. ابدا بالقسم الأول.")
         return
     c1, c2, c3 = st.columns(3)
     min_n = c1.slider("أقل عدد ماتشات فالأرشيف (الصرامة):", 5, 40, 13, key="tk_min_n")
-    min_rate = c2.slider("أقل نسبة نجاح فالأرشيف %:", 40, 95, 65, key="tk_min_rate")
+    min_rate = c2.slider("أقل نسبة نجاح فالأرشيف %:", 30, 95, 45, key="tk_min_rate")
     cap = c3.slider("أقصى اختيارات من نفس النوع فالورقة:", 1, 6, 2, key="tk_cap")
-    odd_lo, odd_hi = st.slider("مجال الكوط:", 1.05, 6.0, (1.30, 3.00), 0.05, key="tk_odds")
-    pool = strict_pool(future, hit_table(hist), min_n, min_rate, odd_lo, odd_hi)
-    st.caption(f"عدد الاختيارات فالبرنامج الجديد اللي طابقات أنماط الأرشيف (تكررت ≥ {min_n} مرة ونجاحها ≥ {min_rate}%): "
-               f"**{len(pool)}** فـ **{pool['mid'].nunique() if not pool.empty else 0}** ماتش.")
-    st.caption("نسبة النجاح العالية ماشي ضمان ديال الربح: الكوط القصيرة كتنجح بزاف ولكن كتخسر على المدى الطويل بسبب هامش الشركة.")
+    odd_lo, odd_hi = st.slider("مجال الكوط (خليه عالي باش الورقة تطلع):", 1.05, 8.0, (1.40, 4.00), 0.05, key="tk_odds")
+    need_roi = st.checkbox("اشترط ROI الأرشيف موجب (أصرم)", value=False, key="tk_roi")
+    pool = strict_pool(future, hit_table(hist), min_n, min_rate, odd_lo, odd_hi, need_roi)
+    n_pos = int((pool["edge"] > 0).sum()) if not pool.empty else 0
+    st.caption(f"اختيارات جاية طابقات أنماط الأرشيف (تكررت ≥ {min_n} مرة ونجاحها ≥ {min_rate}%): "
+               f"**{len(pool)}** فـ **{pool['mid'].nunique() if not pool.empty else 0}** ماتش. "
+               f"منها **{n_pos}** عندها أفضلية محافظة موجبة (نجاح الأرشيف المحافظ > نسبة تعادل الكوط).")
+    if not pool.empty and n_pos == 0:
+        st.warning("⚠️ حتى اختيار ما عندو أفضلية موجبة: تاريخيا هاد الأنماط كتخسر على المدى الطويل (الفخ ديال هامش الشركة).")
+    st.caption("الترتيب: الأفضلية المحافظة = (نجاح الأرشيف بعد تصغير العينة) − (1 ÷ الكوط). نسبة النجاح العالية بوحدها ماشي ضمان.")
     used = set()
     plan = [("1) 🥇 الورقة الذهبية (3 ماتشات)", 3, "gold"), ("2) 🥈 الورقة الثانية (4 ماتشات)", 4, "second"),
             ("3) 🎲 الورقة عالية المخاطرة (6 ماتشات)", 6, "risk")]
@@ -1146,62 +1213,81 @@ def render_tickets(future, hist):
                 st.warning(f"{title}: لقيت غير {len(t)} من {n} ماتش بهاد الشروط.")
         show_ticket(t, title, key)
         st.markdown("---")
-    st.caption("الماتش اللي دخل ورقة ما كيتعاودش فالأوراق الأخرى.")
+    st.caption("الماتش اللي دخل ورقة ما كيتعاودش فالأوراق الأخرى، وكنعرض غير الماتشات اللي مازال ما بداوش.")
+
 
 
 def render_math_matrix(prog):
     st.subheader("🧮 محرك العمليات الحسابية (Math Matrix Engine)")
-    st.info("كيجرب مئات المعادلات (ضرب، قسمة، جمع، طرح، ومزيج) على أسعار كل ماتش فالأرشيف، وكيقيس نجاحها على جزء ما تدرب عليهش. "
-            "لوحة مستقلة للتجريب والمراقبة.")
+    st.info("كيجرب مئات المعادلات (ضرب، قسمة، جمع، طرح، ومزيج) على أسعار كل ماتش فالأرشيف باش يلقى قواعد كتطلع فيها "
+            "**الكوطات العالية** وكتربح، وكيقيسها على جزء ما تدرب عليهش. الكوط القصيرة (بحال 1.06) كيتحيدو بالمجال.")
     hist = st.session_state.hist
     if hist.empty:
         st.warning("الأرشيف خاوي. زيد ماتشات بنتائجها فالقسم الأول.")
         return
     c1, c2, c3, c4 = st.columns(4)
     train_frac = c1.slider("نسبة التدريب %", 50, 85, 70, key="mm_tr") / 100
-    min_train = c2.slider("أقل ماتشات فالتدريب", 15, 120, 30, key="mm_mtr")
-    min_test = c3.slider("أقل ماتشات فالاختبار", 5, 60, 10, key="mm_mte")
-    target = c4.slider("النجاح المطلوب %", 60, 98, 90, key="mm_tgt")
+    min_train = c2.slider("أقل ماتشات فالتدريب", 10, 120, 25, key="mm_mtr")
+    min_test = c3.slider("أقل ماتشات فالاختبار", 5, 60, 8, key="mm_mte")
+    target = c4.slider("أقل نسبة نجاح %", 30, 98, 55, key="mm_tgt")
+    d1, d2 = st.columns([2, 3])
+    odd_lo, odd_hi = d1.slider("مجال كوط الرهان:", 1.05, 8.0, (1.50, 4.00), 0.05, key="mm_odds")
+    tg = d2.multiselect("الرهانات اللي كنقلبو عليها:", MM_ORDER, default=[k for k in MM_ORDER if k != "12"], key="mm_targets")
+    need_roi = st.checkbox("اشترط ROI موجب فالتدريب والاختبار", value=True, key="mm_roi")
+    st.caption("ملاحظة: فكوط حوالي 2.00 النجاح المطلوب باش ما تخسرش هو 50%، وفكوط 1.50 هو 67%. "
+               "90% غير ممكن إلا مع الكوط القصيرة جدا (وهي كتخسر بسبب هامش الشركة).")
     nm = hist["mid"].nunique()
     if nm < 150:
         st.warning(f"الأرشيف فيه {nm} ماتش فقط. مع هاد العدد غالبا غادي تظهر معادلات 'ناجحة' بالصدفة.")
     if st.button("🚀 ابدأ البحث على المعادلات", type="primary", key="mm_run"):
         with st.spinner("كنجرب المعادلات..."):
-            res, info, forms = mm_search(hist, train_frac, min_train, min_test)
-        st.session_state.mm = (res, info, target)
+            res, info, forms = mm_search(hist, train_frac, min_train, min_test, odd_lo, odd_hi, tg)
+        st.session_state.mm = (res, info, target, need_roi, odd_lo, odd_hi)
     if "mm" not in st.session_state:
         return
-    res, info, tgt = st.session_state.mm
+    res, info, tgt, need, lo, hi = st.session_state.mm
     if res.empty:
-        st.error("ما بقات حتى قاعدة بهاد الشروط. نقص 'أقل ماتشات'.")
+        st.error("ما بقات حتى قاعدة بهاد الشروط. نقص 'أقل ماتشات' ولا وسّع مجال الكوط.")
         return
     st.caption(f"ماتشات الأرشيف: {info['matches']} (تدريب {info['train']} | اختبار {info['test']}) • معادلات: {info['formulas']} "
-               f"• قواعد مجربة: {info['rules']:,} • قواعد فيها عدد كافي: {info['kept']:,}")
-    st.caption("⚠️ مللي كنجربو آلاف القواعد، بعضها كيعطي 90% غير بالصدفة. لهادا الحكم كيعتمد على الاختبار، "
-               "وعلى الفرق بين النجاح والنسبة العامة (lift)، وعلى ROI.")
-    ok = res[(res["h_tr"] * 100 >= tgt) & (res["h_te"] * 100 >= tgt)].copy()
-    shown = ok if not ok.empty else res.assign(m=np.minimum(res["h_tr"], res["h_te"])).sort_values("m", ascending=False).head(25)
+               f"• قواعد مجربة: {info['rules']:,} • قواعد فيها عدد كافي: {info['kept']:,} • مجال الكوط {lo:.2f}–{hi:.2f}")
+    st.caption("⚠️ مللي كنجربو آلاف القواعد، بعضها كيربح غير بالصدفة. الحكم كيعتمد على الاختبار، وعلى الفرق بين النجاح "
+               "والنسبة العامة (lift)، وعلى ROI. اللي ما صمدش فالاختبار هو الفخ.")
+    cond = (res["h_tr"] * 100 >= tgt) & (res["h_te"] * 100 >= tgt)
+    if need:
+        cond &= (res["roi_tr"] > 0) & (res["roi_te"] > 0)
+    ok = res[cond].copy().sort_values(["roi_te", "n_te"], ascending=False)
     if ok.empty:
-        st.warning(f"ما كاينة حتى معادلة وصلات {tgt}% فالتدريب والاختبار مجموعين. هادي أحسن 25 قاعدة لقيت:")
+        shown = res.assign(m=np.minimum(res["roi_tr"], res["roi_te"])).sort_values("m", ascending=False).head(25)
+        st.warning("ما كاينة حتى قاعدة صامدة بهاد الشروط (نجاح + ROI موجب فالتدريب والاختبار). هادي أحسن 25 قاعدة "
+                   "(مرتبة حسب أضعف ROI فيهم)، بحال إنذار ماشي توصية:")
     else:
-        st.success(f"{len(ok)} قاعدة وصلات {tgt}% فالتدريب والاختبار.")
-        shown = ok.sort_values(["h_te", "n_te"], ascending=False).head(40)
+        st.success(f"{len(ok)} قاعدة صامدة بهاد الشروط.")
+        shown = ok.head(40)
     out = pd.DataFrame({
         "المعادلة والمعامل": shown["formula"], "الرهان": [pick_label(*MM_TARGET[t]) for t in shown["target"]],
-        "ماتشات التدريب": shown["n_tr"], "نجاح التدريب %": shown["h_tr"] * 100,
+        "متوسط الكوط": shown["avg_te"], "نقطة التعادل %": 100 / shown["avg_te"],
+        "ماتشات التدريب": shown["n_tr"], "نجاح التدريب %": shown["h_tr"] * 100, "ROI التدريب %": shown["roi_tr"] * 100,
         "ماتشات الاختبار": shown["n_te"], "نجاح الاختبار %": shown["h_te"] * 100,
         "النسبة العامة %": shown["base_te"] * 100, "ROI الاختبار %": shown["roi_te"] * 100,
         "الحكم": [mm_verdict(r, tgt) for _, r in shown.iterrows()]})
-    html_table(out, fmt={"نجاح التدريب %": "{:.1f}%", "نجاح الاختبار %": "{:.1f}%", "النسبة العامة %": "{:.1f}%",
-                         "ROI الاختبار %": "{:+.1f}%", "ماتشات التدريب": "{:.0f}", "ماتشات الاختبار": "{:.0f}"}, max_height=520)
+    html_table(out, fmt={"نقطة التعادل %": "{:.1f}%", "نجاح التدريب %": "{:.1f}%", "نجاح الاختبار %": "{:.1f}%",
+                         "النسبة العامة %": "{:.1f}%", "ROI التدريب %": "{:+.1f}%", "ROI الاختبار %": "{:+.1f}%",
+                         "ماتشات التدريب": "{:.0f}", "ماتشات الاختبار": "{:.0f}"}, max_height=520)
     if prog is None or prog.empty:
         st.caption("ارفع برنامج جديد (فوق) باش نطبقو القواعد الصامدة عليه.")
         return
-    keep = ok.sort_values(["h_te", "n_te"], ascending=False).head(15)
+    inc = st.checkbox("عرض حتى الماتشات اللي داز وقتها (للتجربة فقط)", value=False, key="mm_inc_past")
+    keep = ok.head(15)
     if keep.empty:
         st.caption("ما كاينة حتى قاعدة صامدة باش تتطبق على البرنامج الجديد.")
         return
     fut = selections_from_programme(prog[prog["ok"] | prog["partial"]])
+    if not inc:
+        fut = upcoming_only(fut)
+    if fut.empty:
+        st.info("ما بقى حتى ماتش جاي فهاد البرنامج.")
+        return
     odds, _, _ = wide_from_long(fut)
     O = odds.values
     info_df = prog.drop_duplicates("mid").set_index("mid")
@@ -1209,17 +1295,19 @@ def render_math_matrix(prog):
     for _, r in keep.iterrows():
         op, i, j, k, d, t = r["spec"]
         S = eval_formula(op, i, j, k, O)
-        mask = ((S >= t) if d == 1 else (S <= t)) & np.isfinite(S)
         ti = MM_ORDER.index(r["target"])
-        for pos in np.where(mask & np.isfinite(O[:, ti]))[0]:
+        with np.errstate(all="ignore"):
+            mask = (((S >= t) if d == 1 else (S <= t)) & np.isfinite(S) & np.isfinite(O[:, ti])
+                    & (O[:, ti] >= lo) & (O[:, ti] <= hi))
+        for pos in np.where(mask)[0]:
             mid = odds.index[pos]
             row = info_df.loc[mid]
             picks.append({"التاريخ": day_label(row["date"]), "الساعة": row["time"], "المقابلة": vs_text(row),
                           "كود الكوبون": row["coupon"], "كود الجهاز": row["terminal"],
                           "الرهان": pick_label(*MM_TARGET[r["target"]]), "الكوط": O[pos, ti],
-                          "القاعدة": r["formula"], "نجاح الاختبار %": r["h_te"] * 100})
+                          "القاعدة": r["formula"], "ROI الاختبار %": r["roi_te"] * 100})
     st.markdown("#### 🎯 ماتشات البرنامج الجديد المطابقة للقواعد الصامدة (للتجريب فقط)")
-    html_table(pd.DataFrame(picks) if picks else pd.DataFrame(), fmt={"نجاح الاختبار %": "{:.1f}%"}, max_height=420)
+    html_table(pd.DataFrame(picks) if picks else pd.DataFrame(), fmt={"ROI الاختبار %": "{:+.1f}%"}, max_height=420)
 
 
 def main():
@@ -1232,6 +1320,8 @@ def main():
         st.session_state.hist = load_history()
     if "pending" not in st.session_state:
         st.session_state.pending = load_pending()
+    if "_keys" not in st.session_state:
+        st.session_state["_keys"] = load_keys_file()
     hist, pend = st.session_state.hist, st.session_state.pending
 
     st.sidebar.header("🎯 قائمة التحكم")
@@ -1258,7 +1348,8 @@ def main():
                 pend, clean_pending(pd.read_csv(io.BytesIO(raw), dtype={"terminal": str, "coupon": str})))
             save_pending(st.session_state.pending)
         st.rerun()
-    st.sidebar.caption("Streamlit Cloud كيمسح الملفات مللي تعاود النشر، فحمّل النسخ الاحتياطية بين وقت وآخر.")
+    st.sidebar.caption("Streamlit Cloud كيمسح الملفات مللي تعاود النشر. للحفظ النهائي: حمّل النسخ الاحتياطية وحطها فـ GitHub "
+                       "داخل مجلد data/ (history.csv و pending.csv) وغادي يقراهم التطبيق وحدو.")
 
     # ============================================================= القسم 1
     if mode.startswith("📥"):
@@ -1366,7 +1457,15 @@ def main():
             else:
                 st.success(f"📄 قريت {len(prog)} ماتش ({int(prog['ok'].sum())} بقراءة كاملة، "
                            f"{int(prog['partial'].sum())} بقراءة جزئية).")
-                future = selections_from_programme(prog[prog["ok"] | prog["partial"]])
+                future_all = selections_from_programme(prog[prog["ok"] | prog["partial"]])
+                inc = st.checkbox("عرض حتى الماتشات اللي داز وقتها (للتجربة فقط)", value=False, key="inc_past")
+                future = future_all if inc else upcoming_only(future_all)
+                n_all, n_up = future_all["mid"].nunique(), future["mid"].nunique()
+                st.caption(f"دابا: {now_ma():%d/%m/%Y %H:%M} (توقيت المغرب). كنعرض غير الماتشات اللي مازال ما بداوش: "
+                           f"**{n_up}** ماتش" + (f" (خبيت {n_all - n_up} ماتش داز وقتهم)." if n_all > n_up else "."))
+                if future.empty:
+                    st.warning("ما بقى حتى ماتش جاي فهاد البرنامج. ارفع برنامج جديد.")
+                    return
                 t_pat, t_tk = st.tabs(["🔍 أنماط الأرشيف و Value Bet Filter", "🎟️ بناء الأوراق"])
                 with t_pat:
                     render_patterns(future, hist)
@@ -1381,8 +1480,20 @@ def main():
     # ============================================================= القسم 4
     else:
         st.subheader("⚙️ إعدادات ربط النتائج الحية والتاريخية")
-        st.info("مفتاح API-Football (النتائج) وتوكن football-data.org (النتائج + فلتر H2H & Form).")
-        st.text_input("مفتاح API-Football:", value=st.session_state.get("api_key", ""), type="password", key="api_key")
+        st.info("دخل المفاتيح مرة وحدة: كتبقى محفوظة فالجلسة (حتى إيلا بدلتي القسم) وفملف على السيرفر. "
+                "للحفظ الدائم 100% (حتى بعد Reboot) حطهم فـ Streamlit Cloud ← Settings ← Secrets: "
+                "`API_FOOTBALL_KEY = \"...\"` و `FOOTBALL_DATA_KEY = \"...\"`.")
+        cur = st.session_state["_keys"]
+        af_in = st.text_input("مفتاح API-Football:", value=cur.get("af", ""), type="password", key="af_input")
+        fd_in = st.text_input("توكن football-data.org:", value=cur.get("fd", ""), type="password", key="fd_input")
+        new_keys = {"af": af_in.strip(), "fd": fd_in.strip()}
+        if new_keys != cur:
+            st.session_state["_keys"] = new_keys
+            save_keys_file(new_keys)
+            st.success("✅ تحفظو المفاتيح.")
+        st.caption(f"المفاتيح الحالية: API-Football {'✅' if get_keys()['af'] else '❌'} | "
+                   f"football-data.org {'✅' if get_keys()['fd'] else '❌'}. "
+                   "⚠️ إيلا التطبيق عام (public)، أي واحد يفتحو يقدر يستعمل المفاتيح ديالك.")
         if st.button("🔗 فحص الاتصال (API-Football)"):
             try:
                 info = api_get("status", get_keys()["af"]).get("response", {})
@@ -1390,11 +1501,13 @@ def main():
                 st.success(f"✅ المفتاح صحيح. الخطة: {sub.get('plan', '?')} | الطلبات: {req.get('current', '?')} / {req.get('limit_day', '?')}")
             except Exception as e:
                 st.error(f"❌ {explain_error(e)}")
-        st.text_input("توكن football-data.org:", value=st.session_state.get("fd_key", ""), type="password", key="fd_key")
         if st.button("🔗 فحص الاتصال (football-data.org)"):
             try:
                 r = requests.get(f"{FD_BASE}/competitions", headers={"X-Auth-Token": get_keys()["fd"]}, timeout=30)
-                st.success("✅ التوكن صحيح.") if r.status_code == 200 else st.error(f"❌ {r.status_code} {r.json().get('message', '')}")
+                if r.status_code == 200:
+                    st.success("✅ التوكن صحيح.")
+                else:
+                    st.error(f"❌ {r.status_code} {r.json().get('message', '')}")
             except Exception as e:
                 st.error(f"❌ {explain_error(e)}")
         directory = load_team_dir()
