@@ -1048,12 +1048,46 @@ def form_verdict(market, sel, f1, f2):
     return {1: "✅ يدعم", 0: "⚠️ محايد", -1: "❌ يعارض"}[v], why
 
 
+def standings_table(token, comp):
+    c = _read_cache(f"st_{comp}.json", 86400)
+    if c is None:
+        c = fd_get(f"/competitions/{comp}/standings", token).get("standings", [])
+        _write_cache(f"st_{comp}.json", c)
+    tot = next((x for x in c if x.get("type") == "TOTAL"), c[0] if c else None)
+    return tot["table"] if tot else []
+
+
+def team_context(token, comp, tid):
+    """سياق الدافع من الترتيب: خطر النزول / صراع القمة / وسط الترتيب (تقديري)."""
+    if not comp or comp in ("CL", "EC", "WC"):
+        return None
+    tab = standings_table(token, comp)
+    row = next((r for r in tab if r["team"]["id"] == tid), None)
+    if not tab or not row:
+        return None
+    n, pos, pts = len(tab), row["position"], row["points"]
+    safe = tab[max(n - 4, 0)]["points"]
+    need_rel = pos >= n - 3 or (pts - safe) <= 2
+    need_top = pos <= 4 or (tab[0]["points"] - pts) <= 3
+    tag = "خطر النزول" if need_rel else ("صراع القمة" if need_top else "وسط الترتيب (مرتاح)")
+    return {"need": bool(need_rel or need_top), "text": f"#{pos}/{n} ({pts} نقطة) — {tag}"}
+
+
+def backed_side(sel):
+    if sel in ("1", "1X") or sel.startswith("1&"):
+        return 1
+    if sel in ("2", "X2") or sel.startswith("2&"):
+        return 2
+    return 0
+
+
 def hf_analyze(r, token, directory):
     team1, team2 = str(r.get("team1", "")), str(r.get("team2", ""))
     t1, t2 = find_team(team1, directory), find_team(team2, directory)
     base = {"المقابلة": vs_text(r), "الرهان": pick_label(r["market"], r["selection"]), "الكوط": r["odd"]}
     if not t1 or not t2:
-        return {**base, "الفورما (1)": "—", "الفورما (2)": "—", "H2H": "—", "الحكم": "⚪ خارج التغطية",
+        return {**base, "الفورما (1)": "—", "الفورما (2)": "—", "H2H": "—", "السياق (1)": "—", "السياق (2)": "—",
+                "تحذير الدافع": "—", "الحكم": "⚪ خارج التغطية",
                 "السبب": "أحد الفريقين ما كاينش فـ football-data.org (البطولات الكبرى فقط)"}
     m1, m2 = team_recent(token, t1["id"]), team_recent(token, t2["id"])
     f1, f2, hh = form_stats(t1["id"], m1), form_stats(t2["id"], m2), h2h_stats(t1["id"], t2["id"], m1)
@@ -1061,7 +1095,25 @@ def hf_analyze(r, token, directory):
     fmt = lambda f: f"{f['w']}-{f['d']}-{f['l']} ({f['gf']}:{f['ga']})"
     h2h = (f"{hh['n']} مواجهة: {hh['w1']}-{hh['d']}-{hh['w2']} | معدل {hh['avg']:.1f} هدف" if hh["n"]
            else "ما كاينش مواجهات فالبيانات")
-    return {**base, "الفورما (1)": fmt(f1), "الفورما (2)": fmt(f2), "H2H": h2h, "الحكم": verdict, "السبب": why}
+    try:
+        c1 = team_context(token, t1.get("comp"), t1["id"])
+        c2 = team_context(token, t2.get("comp"), t2["id"])
+    except Exception:
+        c1 = c2 = None
+    side, warn = backed_side(r["selection"]), "—"
+    if c1 and c2:
+        mine, opp = (c1, c2) if side == 1 else ((c2, c1) if side == 2 else (None, None))
+        if mine and opp and opp["need"] and not mine["need"]:
+            warn = "⚠️ المنافس محتاج نقط والفريق المدعوم مرتاح (احتمال فخ)"
+        elif c1["need"] and c2["need"]:
+            warn = "⚠️ ماتش حاسم للجوج (مفتوح)"
+    out = {**base, "الفورما (1)": fmt(f1), "الفورما (2)": fmt(f2), "H2H": h2h,
+           "السياق (1)": c1["text"] if c1 else "—", "السياق (2)": c2["text"] if c2 else "—",
+           "تحذير الدافع": warn, "الحكم": verdict, "السبب": why}
+    if c1 and c2 and side:
+        mine, opp = (c1, c2) if side == 1 else (c2, c1)
+        out["_need"], out["_opp"], out["_relax"] = mine["need"], opp["need"], not mine["need"]
+    return out
 
 
 # =====================================================================
@@ -1160,6 +1212,9 @@ def show_ticket(t, title, key):
     c2.metric("احتمال الورقة حسب الأرشيف", f"{np.prod(t['نسبة الربح %'] / 100) * 100:.1f}%")
     c3.metric("احتمال الورقة حسب الشركة", f"{np.nanprod(t['fair_p']) * 100:.1f}%")
     st.session_state.setdefault("hf", {})
+    if st.button("💾 سجّل هاد الورقة فسجل التوقعات (باش نراجعو الأخطاء من بعد)", key=f"save_{key}"):
+        k = journal_add(t, title, st.session_state.hf)
+        st.success(f"تسجلو {k} اختيار. من بعد ما ديزو الماتشات سير لقسم '📓 سجل التوقعات'.")
     if st.button(f"🔬 فلتر H2H & Form ({len(t)} ماتش)", key=f"hf_btn_{key}"):
         keys, directory = get_keys(), load_team_dir()
         if not keys["fd"]:
@@ -1175,12 +1230,14 @@ def show_ticket(t, title, key):
                 except Exception as e:
                     st.session_state.hf[(r["mid"], r["market"], r["selection"])] = {
                         "المقابلة": vs_text(r), "الرهان": pick_label(r["market"], r["selection"]), "الكوط": r["odd"],
-                        "الفورما (1)": "—", "الفورما (2)": "—", "H2H": "—", "الحكم": "⚪ خطأ", "السبب": explain_error(e)}
+                        "الفورما (1)": "—", "الفورما (2)": "—", "H2H": "—", "السياق (1)": "—", "السياق (2)": "—",
+                        "تحذير الدافع": "—", "الحكم": "⚪ خطأ", "السبب": explain_error(e)}
                 bar.progress((i + 1) / len(t))
     got = [st.session_state.hf[k] for k in zip(t["mid"], t["market"], t["selection"]) if k in st.session_state.hf]
     if got:
         st.markdown("**نتيجة فلتر H2H & Form:**")
-        html_table(pd.DataFrame(got), fmt={"الكوط": "{:.2f}"}, max_height=360)
+        gdf = pd.DataFrame(got)
+        html_table(gdf[[c for c in gdf.columns if not str(c).startswith("_")]], fmt={"الكوط": "{:.2f}"}, max_height=360)
 
 
 
@@ -1194,7 +1251,18 @@ def render_tickets(future, hist):
     cap = c3.slider("أقصى اختيارات من نفس النوع فالورقة:", 1, 6, 2, key="tk_cap")
     odd_lo, odd_hi = st.slider("مجال الكوط (خليه عالي باش الورقة تطلع):", 1.05, 8.0, (1.40, 4.00), 0.05, key="tk_odds")
     need_roi = st.checkbox("اشترط ROI الأرشيف موجب (أصرم)", value=False, key="tk_roi")
-    pool = strict_pool(future, hit_table(hist), min_n, min_rate, odd_lo, odd_hi, need_roi)
+    labels = {r["mid"]: f"{day_label(r['date'])} {r['time']} — {vs_text(r)}" for r in future.to_dict("records")}
+    excl = st.multiselect("🚫 استبعد ماتشات (سمعتي خبر: نجم غايب، فريق محتاج نقط...):", sorted(set(labels.values())),
+                          key="tk_excl")
+    fut2 = future[~future["mid"].map(labels).isin(excl)] if excl else future
+    pool = strict_pool(fut2, hit_table(hist), min_n, min_rate, odd_lo, odd_hi, need_roi)
+    jr = st.session_state.get("journal")
+    bl = derive_blacklist(jr) if jr is not None and not jr.empty else []
+    use_bl = st.checkbox(f"طبق قائمة التجنب المتعلمة من أخطائي ({len(bl)} قاعدة)", value=True, key="tk_bl")
+    if use_bl and bl and not pool.empty:
+        pool, removed = apply_blacklist(pool, bl)
+        if removed:
+            st.caption(f"🛡️ تحيدو {removed} اختيار حسب قائمة التجنب (أنماط/دوريات خسرات فسجلك).")
     n_pos = int((pool["edge"] > 0).sum()) if not pool.empty else 0
     st.caption(f"اختيارات جاية طابقات أنماط الأرشيف (تكررت ≥ {min_n} مرة ونجاحها ≥ {min_rate}%): "
                f"**{len(pool)}** فـ **{pool['mid'].nunique() if not pool.empty else 0}** ماتش. "
@@ -1310,6 +1378,343 @@ def render_math_matrix(prog):
     html_table(pd.DataFrame(picks) if picks else pd.DataFrame(), fmt={"ROI الاختبار %": "{:+.1f}%"}, max_height=420)
 
 
+# =====================================================================
+# 13) سجل التوقعات ومراجعة الأخطاء (التعلم من الأخطاء)
+# =====================================================================
+JOURNAL_PATH = os.path.join(DATA_DIR, "journal.csv")
+FLAGS = {"f_star": "نجم غايب", "f_need": "المدعوم محتاج نقط", "f_opp": "المنافس محتاج نقط",
+         "f_relax": "المدعوم مرتاح", "f_cup": "كأس/روتاسيون"}
+J_COLS = ["jid", "saved_at", "ticket", "mid", "date", "time", "league", "team1", "team2", "market", "selection",
+          "odd", "n", "hits", "rate", "roi", "fair_p", "edge", "odds_json", "status", "gh", "ga", "hth", "hta",
+          "won"] + list(FLAGS)
+SEL_IDX = {(m, s): i for i, m, s in SELECTIONS}
+
+
+def clean_journal(j):
+    j = j.copy()
+    for c in J_COLS:
+        if c not in j.columns:
+            j[c] = None
+    j["date"] = pd.to_datetime(j["date"]).dt.date
+    j["won"] = j["won"].map(_b).astype(object)
+    for c in FLAGS:
+        j[c] = j[c].map(lambda v: v in (True, "True", "true", 1, 1.0)).astype(bool)
+    for c in ("jid", "ticket", "mid", "team1", "team2", "time", "odds_json", "status"):
+        j[c] = j[c].fillna("").astype(str)
+    for c in ("odd", "n", "hits", "rate", "roi", "fair_p", "edge", "gh", "ga", "hth", "hta"):
+        j[c] = pd.to_numeric(j[c], errors="coerce")
+    return j[J_COLS].reset_index(drop=True)
+
+
+def load_journal():
+    if os.path.exists(JOURNAL_PATH):
+        return clean_journal(pd.read_csv(JOURNAL_PATH, dtype={"mid": str}))
+    return clean_journal(pd.DataFrame(columns=J_COLS))
+
+
+def save_journal(j):
+    os.makedirs(DATA_DIR, exist_ok=True)
+    j.to_csv(JOURNAL_PATH, index=False)
+
+
+def journal_add(t, title, hf=None):
+    hf = hf or {}
+    stamp = now_ma().strftime("%Y-%m-%d %H:%M")
+    rows = []
+    for _, r in t.iterrows():
+        h = hf.get((r["mid"], r["market"], r["selection"]), {})
+        rows.append({"jid": f"{r['mid']}|{r['market']}|{r['selection']}|{title}", "saved_at": stamp, "ticket": title,
+                     "mid": r["mid"], "date": r["date"], "time": r["time"], "league": r["league"],
+                     "team1": r.get("team1", ""), "team2": r.get("team2", ""), "market": r["market"],
+                     "selection": r["selection"], "odd": float(r["odd"]), "n": r.get("n"), "hits": r.get("hits"),
+                     "rate": r.get("نسبة الربح %"), "roi": r.get("ROI %"), "fair_p": r.get("fair_p"),
+                     "edge": r.get("edge"), "odds_json": r.get("odds_json", ""), "status": "", "gh": None,
+                     "ga": None, "hth": None, "hta": None, "won": None,
+                     "f_star": False, "f_need": bool(h.get("_need", False)), "f_opp": bool(h.get("_opp", False)),
+                     "f_relax": bool(h.get("_relax", False)), "f_cup": False})
+    new = clean_journal(pd.DataFrame(rows))
+    both = pd.concat([st.session_state.journal, new], ignore_index=True).drop_duplicates("jid", keep="first")
+    st.session_state.journal = both.reset_index(drop=True)
+    save_journal(st.session_state.journal)
+    return len(new)
+
+
+def pick_result(market, sel, gh, ga, hth=None, hta=None):
+    idx = SEL_IDX.get((market, sel))
+    if idx is None:
+        return None
+    r = {f"o{i}": float("nan") for i in range(N_TOKENS)}
+    r[f"o{idx}"] = 2.0
+    out = evaluate_match(r, int(gh), int(ga), hth, hta)
+    return out[0]["won"] if out else None
+
+
+def odds_row(js):
+    r = {f"o{i}": float("nan") for i in range(N_TOKENS)}
+    try:
+        r.update({k: float(v) for k, v in json.loads(js).items()})
+    except Exception:
+        pass
+    return r
+
+
+def _num(v):
+    return None if v is None or (isinstance(v, float) and math.isnan(v)) else int(v)
+
+
+def loss_story(r):
+    gh, ga, hth, hta = _num(r["gh"]), _num(r["ga"]), _num(r["hth"]), _num(r["hta"])
+    res, tot, market, sel = _res(gh, ga), gh + ga, r["market"], r["selection"]
+    parts = [f"النتيجة {gh}-{ga}" + (f" (الشوط الأول {hth}-{hta})" if hth is not None and hta is not None else "")]
+    side = backed_side(sel) if market in ("1X2", "حظ مزدوج", "نتيجة + M/P 2.5") else 0
+    if side and hth is not None and hta is not None:
+        hr = _res(hth, hta)
+        if hr == str(side) and res != str(side):
+            parts.append("🔄 كان متقدم فالشوط الأول وقلبوها عليه")
+        elif res == "X" and side:
+            parts.append("تعادل")
+        else:
+            parts.append("خسر بفارق " + str(abs(gh - ga)))
+    elif side:
+        parts.append("خسر بفارق " + str(abs(gh - ga)) if res != "X" else "تعادل")
+    if market.startswith("M/P") and "شوط1" not in market:
+        parts.append(f"المجموع {tot} هدف مقابل خط {market.split()[1]}")
+    if market == "BTTS":
+        parts.append("واحد من الفريقين ما سجلش" if sel == "Oui" else "الجوج سجلو")
+    return " | ".join(parts)
+
+
+def trap_signals(r):
+    sig = []
+    fp = r["fair_p"]
+    if pd.notna(fp) and fp < 0.45:
+        sig.append(f"احتمال الشركة الصافي غير {fp * 100:.0f}%")
+    o = odds_row(r["odds_json"])
+    if r["market"] in ("1X2", "حظ مزدوج", "نتيجة + M/P 2.5") and all(np.isfinite([o["o0"], o["o1"], o["o2"]])):
+        p = np.array([1 / o["o0"], 1 / o["o1"], 1 / o["o2"]])
+        p = p / p.sum()
+        if abs(p[0] - p[2]) < 0.12:
+            sig.append("ماتش متكافئ (الفرق بين الفريقين أقل من 12%)")
+        if p[1] > 0.30:
+            sig.append("احتمال التعادل مرتفع (+30%)")
+    if pd.notna(r["roi"]) and r["roi"] <= -10:
+        sig.append(f"النمط كان كيخسر فالأرشيف (ROI {r['roi']:+.0f}%)")
+    if pd.notna(r["n"]) and r["n"] < 20:
+        sig.append(f"عينة الأرشيف صغيرة ({int(r['n'])} ماتش)")
+    sig += [lab for k, lab in FLAGS.items() if r[k] and k != "f_relax"]
+    return sig
+
+
+def advice(sig):
+    t = " ".join(sig)
+    tips = []
+    if "متكافئ" in t or "التعادل" in t:
+        tips.append("فالماتش المتكافئ فضّل 1X/X2 ولا Plus/Moins بدل 1/2")
+    if "احتمال الشركة" in t:
+        tips.append("ما تدخلش اختيارات احتمالها الصافي أقل من 45%")
+    if "ROI" in t:
+        tips.append("فعّل 'اشترط ROI موجب'")
+    if "عينة" in t:
+        tips.append("طلّع 'أقل عدد ماتشات'")
+    if any(lab in t for k, lab in FLAGS.items() if k != "f_relax"):
+        tips.append("هاد الأخبار كانت خاصة تخرجو الماتش (استبعدو قبل التسجيل)")
+    tips.append("شغّل فلتر H2H & Form + السياق قبل التسجيل")
+    return " • ".join(tips)
+
+
+def winners_text(r):
+    o = odds_row(r["odds_json"])
+    out = evaluate_match(o, int(r["gh"]), int(r["ga"]), _num(r["hth"]), _num(r["hta"]))
+    keep = [e for e in out if e["won"] and e["market"] in ("1X2", "حظ مزدوج", "M/P 1.5", "M/P 2.5", "M/P 3.5", "BTTS")]
+    keep = sorted(keep, key=lambda e: -e["odd"])[:4]
+    return " | ".join(f"{pick_label(e['market'], e['selection'])} @ {e['odd']:.2f}" for e in keep) or "—"
+
+
+def derive_blacklist(j):
+    """قواعد التجنب من الأخطاء: نمط/نوع رهان/دوري فيه ≥ N رهانات ونجاحو ≤ العتبة."""
+    min_n = int(st.session_state.get("bl_min_n", 3))
+    max_rate = float(st.session_state.get("bl_max_rate", 34)) / 100
+    s = j[j["won"].notna()].copy()
+    if s.empty:
+        return []
+    s["w"] = s["won"].astype(bool).astype(int)
+    s["band"] = pd.cut(s["odd"], BANDS, labels=BAND_LABELS, right=False).astype(str)
+    rules = []
+    for keys, kind in ((["market", "selection", "band"], "نمط"), (["market", "selection"], "نوع رهان"),
+                       (["league"], "دوري")):
+        g = s.groupby(keys).agg(n=("w", "size"), w=("w", "sum")).reset_index()
+        g = g[(g["n"] >= min_n + (1 if kind != "نمط" else 0)) & (g["w"] / g["n"] <= max_rate)]
+        for _, r in g.iterrows():
+            rules.append({"kind": kind, "keys": {k: r[k] for k in keys}, "n": int(r["n"]), "w": int(r["w"])})
+    return rules
+
+
+def apply_blacklist(pool, rules):
+    p = add_band(pool) if "band" not in pool.columns else pool.copy()
+    drop = pd.Series(False, index=p.index)
+    for ru in rules:
+        m = pd.Series(True, index=p.index)
+        for k, v in ru["keys"].items():
+            m &= (p[k].astype(str) == str(v))
+        drop |= m
+    return pool[~drop], int(drop.sum())
+
+
+def _stats(d, by):
+    g = d.groupby(by, observed=True).agg(n=("w", "size"), wins=("w", "sum"), roi=("ret", "mean")).reset_index()
+    g["نسبة النجاح %"] = g["wins"] / g["n"] * 100
+    g["ROI %"] = g["roi"] * 100
+    return g.drop(columns=["roi"])
+
+
+def render_journal():
+    st.subheader("📓 سجل التوقعات ومراجعة الأخطاء")
+    st.info("كتسجل الأوراق اللي خرجات لك، ومن بعد ما ديزو الماتشات كتدخل النتائج، والنظام كيقارن، كيفسر فين غلط، "
+            "وكيبني **قائمة تجنب** كتطبق فالأوراق الجاية.")
+    j = st.session_state.journal
+    if j.empty:
+        st.info("السجل خاوي. فقسم '🧠 فحص البرنامج الجديد ← 🎟️ بناء الأوراق' كليكي '💾 سجّل هاد الورقة'.")
+        return
+    settled = j[j["won"].notna()]
+    pend = j[j["won"].isna()]
+    wins = int(settled["won"].astype(bool).sum()) if not settled.empty else 0
+    roi = float((settled["won"].astype(bool) * settled["odd"] - 1).mean() * 100) if not settled.empty else 0.0
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("اختيارات مسجلة", len(j)); c2.metric("محسوبة", len(settled))
+    c3.metric("نجحات", f"{wins} ({wins / len(settled) * 100:.0f}%)" if len(settled) else "—")
+    c4.metric("ROI فالسجل", f"{roi:+.1f}%" if len(settled) else "—")
+
+    if pend.empty and st.session_state.get("msg_j"):
+        st.success(st.session_state.pop("msg_j"))
+    if not pend.empty:
+        st.markdown("### 1) دخل نتائج الماتشات اللي داز وقتها")
+        if "jres" not in st.session_state:
+            st.session_state.jres = pd.DataFrame({
+                "jid": pend["jid"].values, "mid": pend["mid"].values, "date": pend["date"].values,
+                "time": pend["time"].values, "match_text": (pend["team1"] + " " + pend["team2"]).str.strip().values,
+                "الرهان": [pick_label(m, s) for m, s in zip(pend["market"], pend["selection"])],
+                "odd": pend["odd"].values, "status": pend["status"].values, "gh": pend["gh"].values,
+                "ga": pend["ga"].values, "hth": pend["hth"].values, "hta": pend["hta"].values, "src": "",
+                **{k: pend[k].values for k in FLAGS}})
+        jres = st.session_state.jres
+        if st.button("🔎 جلب النتائج من API", key="j_fetch"):
+            keys = get_keys()
+            if not keys["af"] and not keys["fd"]:
+                st.error("حط مفتاح واحد على الأقل فقسم '⚙️ ربط API'.")
+            else:
+                sub = jres.drop_duplicates("mid").assign(terminal=lambda d: d["mid"])[["terminal", "date", "time", "match_text"]]
+                res, errs = match_results(sub.reset_index(drop=True), keys)
+                for e in errs:
+                    st.warning(e)
+                by_mid = res.set_index("terminal")
+                for i, r in jres.iterrows():
+                    if r["mid"] in by_mid.index and by_mid.at[r["mid"], "status"] in FINAL:
+                        for c in ("status", "gh", "ga", "hth", "hta", "src"):
+                            jres.at[i, c] = by_mid.at[r["mid"], c]
+                st.session_state.jres = jres
+                st.session_state.pop("jres_editor", None)
+                st.rerun()
+        edited = st.data_editor(
+            jres, key="jres_editor", hide_index=True, use_container_width=True,
+            column_order=["date", "time", "match_text", "الرهان", "odd", "status", "gh", "ga", "hth", "hta"] + list(FLAGS),
+            disabled=["jid", "mid", "date", "time", "match_text", "الرهان", "odd", "src"],
+            column_config={"date": st.column_config.DateColumn("التاريخ", width="small"),
+                           "time": st.column_config.TextColumn("الساعة", width="small"),
+                           "match_text": st.column_config.TextColumn("المقابلة", width="large"),
+                           "الرهان": st.column_config.TextColumn("الرهان", width="medium"),
+                           "odd": st.column_config.NumberColumn("الكوط", format="%.2f", width="small"),
+                           "status": st.column_config.TextColumn("الحالة (FT)", width="small"),
+                           "gh": st.column_config.NumberColumn("أهداف 1", min_value=0, step=1, width="small"),
+                           "ga": st.column_config.NumberColumn("أهداف 2", min_value=0, step=1, width="small"),
+                           "hth": st.column_config.NumberColumn("شوط1 (1)", min_value=0, step=1, width="small"),
+                           "hta": st.column_config.NumberColumn("شوط1 (2)", min_value=0, step=1, width="small"),
+                           **{k: st.column_config.CheckboxColumn(v, width="small") for k, v in FLAGS.items()}})
+        with st.expander("📋 لصق النتائج من أي موقع"):
+            txt = st.text_area("كل سطر: Arsenal 3-0 Hull City (1-0)", height=140, key="j_paste")
+            if st.button("طبّق النتائج الملصوقة", key="j_apply"):
+                new_res, n_app = apply_pasted(edited, txt)
+                st.session_state.jres = new_res
+                st.session_state.pop("jres_editor", None)
+                st.session_state.msg_j = f"تطبقات {n_app} نتيجة."
+                st.rerun()
+        if st.session_state.get("msg_j"):
+            st.success(st.session_state.pop("msg_j"))
+        if st.button("✅ احسب النتائج وحلل الأخطاء", type="primary", key="j_calc"):
+            jj = st.session_state.journal.set_index("jid")
+            n_set = 0
+            for _, r in edited.iterrows():
+                for f in FLAGS:
+                    jj.at[r["jid"], f] = bool(r[f])
+                done = str(r["status"]).upper() in ("FT", "AET", "PEN")
+                if done and pd.notna(r["gh"]) and pd.notna(r["ga"]):
+                    row = jj.loc[r["jid"]]
+                    h1, h2 = _num(r["hth"]), _num(r["hta"])
+                    jj.at[r["jid"], "won"] = pick_result(row["market"], row["selection"], int(r["gh"]), int(r["ga"]), h1, h2)
+                    for c, v in (("gh", r["gh"]), ("ga", r["ga"]), ("hth", r["hth"]), ("hta", r["hta"])):
+                        jj.at[r["jid"], c] = v
+                    jj.at[r["jid"], "status"] = "FT"
+                    n_set += 1
+            st.session_state.journal = clean_journal(jj.reset_index())
+            save_journal(st.session_state.journal)
+            for k in ("jres", "jres_editor"):
+                st.session_state.pop(k, None)
+            st.session_state.msg_j = f"تحسبو {n_set} اختيار."
+            st.rerun()
+
+    settled = st.session_state.journal[st.session_state.journal["won"].notna()]
+    if settled.empty:
+        return
+    losers = settled[settled["won"] == False].sort_values("date", ascending=False)
+    st.markdown(f"### 2) مراجعة الخسائر ({len(losers)})")
+    if losers.empty:
+        st.success("ما كاين حتى اختيار خاسر فالسجل.")
+    else:
+        rows = []
+        for _, r in losers.head(40).iterrows():
+            sig = trap_signals(r)
+            rows.append({"التاريخ": day_label(r["date"]), "المقابلة": vs_text(r),
+                         "الرهان": pick_label(r["market"], r["selection"]), "الكوط": r["odd"],
+                         "قصة الماتش": loss_story(r),
+                         "إشارات التحذير": " • ".join(sig) or "ما بانت حتى إشارة فالأرقام",
+                         "اللي كان كيربح فهاد الماتش": winners_text(r), "كيفاش نتفاداه": advice(sig)})
+        html_table(pd.DataFrame(rows), fmt={"الكوط": "{:.2f}"}, max_height=520)
+
+    st.markdown("### 3) شنو تعلمنا من السجل")
+    d = settled.copy()
+    d["w"] = d["won"].astype(bool).astype(int)
+    d["ret"] = d["w"] * d["odd"] - 1
+    d["band"] = pd.cut(d["odd"], BANDS, labels=BAND_LABELS, right=False)
+    d["الدوري"] = d["league"].map(league_name)
+    d["الرهان"] = [pick_label(m, s) for m, s in zip(d["market"], d["selection"])]
+    fm = {"نسبة النجاح %": "{:.0f}%", "ROI %": "{:+.0f}%", "n": "{:.0f}", "wins": "{:.0f}"}
+    t1, t2, t3 = st.tabs(["حسب الرهان", "حسب الكوط والدوري", "حسب السياق (أخبار)"])
+    with t1:
+        html_table(_stats(d, ["الرهان"]).sort_values("n", ascending=False), fmt=fm, max_height=300)
+    with t2:
+        html_table(_stats(d, ["band"]), fmt=fm, max_height=250)
+        html_table(_stats(d, ["الدوري"]).sort_values("n", ascending=False), fmt=fm, max_height=300)
+    with t3:
+        fr = []
+        for k, lab in FLAGS.items():
+            a, b = d[d[k]], d[~d[k]]
+            fr.append({"السياق": lab, "عدد (إيه)": len(a), "نجاح (إيه) %": a["w"].mean() * 100 if len(a) else float("nan"),
+                       "عدد (لا)": len(b), "نجاح (لا) %": b["w"].mean() * 100 if len(b) else float("nan")})
+        html_table(pd.DataFrame(fr), fmt={"نجاح (إيه) %": "{:.0f}%", "نجاح (لا) %": "{:.0f}%"}, max_height=260)
+        st.caption("علّم الأعلام (نجم غايب، محتاج نقط...) فجدول النتائج فوق. كلما تراكمت الأمثلة، كتبان هاد الفروق.")
+    st.markdown("#### 🛡️ قائمة التجنب (كتطبق أوتوماتيكيا فالأوراق)")
+    b1, b2 = st.columns(2)
+    b1.slider("أقل عدد رهانات باش نحكمو", 2, 10, 3, key="bl_min_n")
+    b2.slider("أقصى نسبة نجاح للتجنب %", 0, 60, 34, key="bl_max_rate")
+    rules = derive_blacklist(st.session_state.journal)
+    if rules:
+        html_table(pd.DataFrame([{"النوع": r["kind"], "الشرط": " | ".join(f"{k}={league_name(v) if k == 'league' else v}"
+                                                                    for k, v in r["keys"].items()),
+                                  "الرهانات": r["n"], "نجحات": r["w"]} for r in rules]), max_height=260)
+        st.caption("⚠️ مع عينة صغيرة القائمة ممكن تكون صدفة. كل ما كبر السجل كل ما تصح.")
+    else:
+        st.caption("ما كاينة حتى قاعدة تجنب بعد (خاص كثر ديال الخسائر المتشابهة).")
+
+
 def main():
     st.set_page_config(page_title="System Diagnostics & Logs", page_icon="⚙️", layout="wide")
     st.markdown(TABLE_CSS, unsafe_allow_html=True)
@@ -1322,12 +1727,15 @@ def main():
         st.session_state.pending = load_pending()
     if "_keys" not in st.session_state:
         st.session_state["_keys"] = load_keys_file()
+    if "journal" not in st.session_state:
+        st.session_state.journal = load_journal()
     hist, pend = st.session_state.hist, st.session_state.pending
 
     st.sidebar.header("🎯 قائمة التحكم")
     mode = st.sidebar.radio("اختر القسم:", ["📥 رفع الأرشيف والتعلم التلقائي",
                                             "🧠 فحص البرنامج الجديد واكتشاف النمط",
                                             "🧮 المحرك الحسابي (Math Matrix)",
+                                            "📓 سجل التوقعات ومراجعة الأخطاء",
                                             "⚙️ ربط API النتائج (API-Football)"])
     st.sidebar.metric("ماتشات فالأرشيف", hist["mid"].nunique() if not hist.empty else 0)
     st.sidebar.metric("ماتشات فالانتظار", len(pend))
@@ -1337,10 +1745,18 @@ def main():
     if not pend.empty:
         st.sidebar.download_button("⬇️ نسخة احتياطية: قائمة الانتظار", pend.to_csv(index=False).encode("utf-8"),
                                    "pending.csv", "text/csv")
+    if not st.session_state.journal.empty:
+        st.sidebar.download_button("⬇️ نسخة احتياطية: سجل التوقعات", st.session_state.journal.to_csv(index=False).encode("utf-8"),
+                                   "journal.csv", "text/csv")
     bk = st.sidebar.file_uploader("استرجاع نسخة محفوظة (CSV)", type="csv", key="bk")
     if bk is not None and st.sidebar.button("دمج النسخة المرفوعة"):
         raw = bk.getvalue()
-        if "won" in pd.read_csv(io.BytesIO(raw), nrows=0).columns:
+        cols_bk = set(pd.read_csv(io.BytesIO(raw), nrows=0).columns)
+        if "jid" in cols_bk:
+            jb = clean_journal(pd.read_csv(io.BytesIO(raw), dtype={"mid": str}))
+            st.session_state.journal = pd.concat([st.session_state.journal, jb]).drop_duplicates("jid", keep="first").reset_index(drop=True)
+            save_journal(st.session_state.journal)
+        elif "won" in cols_bk:
             st.session_state.hist = merge_history(hist, clean_history(pd.read_csv(io.BytesIO(raw))))
             save_history(st.session_state.hist)
         else:
@@ -1349,7 +1765,7 @@ def main():
             save_pending(st.session_state.pending)
         st.rerun()
     st.sidebar.caption("Streamlit Cloud كيمسح الملفات مللي تعاود النشر. للحفظ النهائي: حمّل النسخ الاحتياطية وحطها فـ GitHub "
-                       "داخل مجلد data/ (history.csv و pending.csv) وغادي يقراهم التطبيق وحدو.")
+                       "داخل مجلد data/ (history.csv و pending.csv و journal.csv) وغادي يقراهم التطبيق وحدو.")
 
     # ============================================================= القسم 1
     if mode.startswith("📥"):
@@ -1458,6 +1874,9 @@ def main():
                 st.success(f"📄 قريت {len(prog)} ماتش ({int(prog['ok'].sum())} بقراءة كاملة، "
                            f"{int(prog['partial'].sum())} بقراءة جزئية).")
                 future_all = selections_from_programme(prog[prog["ok"] | prog["partial"]])
+                odds_map = {r["mid"]: json.dumps({f"o{i}": r[f"o{i}"] for i in range(N_TOKENS) if _ok(r[f"o{i}"])})
+                            for r in prog.to_dict("records")}
+                future_all["odds_json"] = future_all["mid"].map(odds_map)
                 inc = st.checkbox("عرض حتى الماتشات اللي داز وقتها (للتجربة فقط)", value=False, key="inc_past")
                 future = future_all if inc else upcoming_only(future_all)
                 n_all, n_up = future_all["mid"].nunique(), future["mid"].nunique()
@@ -1477,7 +1896,11 @@ def main():
         f = st.file_uploader("📂 ارفع برنامج جديد لتطبيق القواعد (اختياري):", type=["pdf"], key="math_prog_pdf")
         render_math_matrix(parse_bytes(f.getvalue()) if f else None)
 
-    # ============================================================= القسم 4
+    # ============================================================= القسم 4: السجل
+    elif mode.startswith("📓"):
+        render_journal()
+
+    # ============================================================= القسم 5
     else:
         st.subheader("⚙️ إعدادات ربط النتائج الحية والتاريخية")
         st.info("دخل المفاتيح مرة وحدة: كتبقى محفوظة فالجلسة (حتى إيلا بدلتي القسم) وفملف على السيرفر. "
