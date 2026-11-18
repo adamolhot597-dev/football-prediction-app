@@ -1567,13 +1567,69 @@ def _stats(d, by):
     return g.drop(columns=["roi"])
 
 
+MANUAL_OPTS = [(m, sel) for _, m, sel in SELECTIONS if m != "هانديكاب"]
+
+
+def _parse_score(t):
+    m = re.match(r"^\s*(\d{1,2})\s*[-:–]\s*(\d{1,2})\s*$", str(t or ""))
+    return (int(m.group(1)), int(m.group(2))) if m else (None, None)
+
+
+def manual_entry_form():
+    """زيد اختيار لعبتيه قبل (حتى بلا ما يكون خرج من النظام) باش النظام يتعلم منو."""
+    with st.expander("➕ زيد اختيار لعبتيه (ماتش داز) باش النظام يتعلم منو", expanded=st.session_state.journal.empty):
+        with st.form("j_manual_form", clear_on_submit=True):
+            c1, c2, c3 = st.columns(3)
+            d = c1.date_input("التاريخ", value=today_ma(), key="jm_date")
+            tm = c2.text_input("الساعة (HH:MM)", value="20:00", key="jm_time")
+            lg = c3.selectbox("الدوري", list(LEAGUE_NAMES.keys()), format_func=league_name, key="jm_league")
+            t1 = c1.text_input("الفريق 1", key="jm_t1")
+            t2 = c2.text_input("الفريق 2", key="jm_t2")
+            odd = c3.number_input("الكوط", min_value=1.01, max_value=100.0, value=1.80, step=0.01, key="jm_odd")
+            pk = st.selectbox("الرهان اللي لعبتي", MANUAL_OPTS, format_func=lambda x: pick_label(*x), key="jm_pick")
+            r1, r2 = st.columns(2)
+            ft = r1.text_input("النتيجة النهائية (مثال 3-1) — خليها خاوية إيلا مازال", key="jm_ft")
+            ht = r2.text_input("نتيجة الشوط الأول (اختياري، مثال 1-0)", key="jm_ht")
+            fc = st.columns(len(FLAGS))
+            fl = {k: fc[i].checkbox(lab, key=f"jm_{k}") for i, (k, lab) in enumerate(FLAGS.items())}
+            go = st.form_submit_button("💾 زيد للسجل")
+        if go:
+            if not str(t1).strip() or not str(t2).strip() or not re.match(r"^\d{1,2}:\d{2}$", str(tm).strip()):
+                st.error("كمّل الفريقين والساعة (HH:MM).")
+                return
+            gh, ga = _parse_score(ft)
+            hh, ha = _parse_score(ht)
+            market, sel = pk
+            won = pick_result(market, sel, gh, ga, hh, ha) if gh is not None else None
+            slug = re.sub(r"\W+", "", str(t1) + str(t2))
+            mid = f"manual_{d}_{slug}"
+            row = {"jid": f"{mid}|{market}|{sel}|يدوي", "saved_at": now_ma().strftime("%Y-%m-%d %H:%M"), "ticket": "يدوي",
+                   "mid": mid, "date": d, "time": str(tm).strip(), "league": lg, "team1": str(t1).strip(),
+                   "team2": str(t2).strip(), "market": market, "selection": sel, "odd": float(odd), "n": None,
+                   "hits": None, "rate": None, "roi": None, "fair_p": None, "edge": None, "odds_json": "",
+                   "status": "FT" if gh is not None else "", "gh": gh, "ga": ga, "hth": hh, "hta": ha, "won": won, **fl}
+            new = clean_journal(pd.DataFrame([row]))
+            both = pd.concat([st.session_state.journal, new], ignore_index=True).drop_duplicates("jid", keep="first")
+            st.session_state.journal = both.reset_index(drop=True)
+            save_journal(st.session_state.journal)
+            st.session_state.pop("jres", None)
+            st.session_state.pop("jres_editor", None)
+            st.session_state.msg_j = "تزاد الاختيار للسجل" + (" (محسوب)." if gh is not None else " (فالانتظار: دخل نتيجتو تحت).")
+            st.rerun()
+
+
 def render_journal():
     st.subheader("📓 سجل التوقعات ومراجعة الأخطاء")
     st.info("كتسجل الأوراق اللي خرجات لك، ومن بعد ما ديزو الماتشات كتدخل النتائج، والنظام كيقارن، كيفسر فين غلط، "
             "وكيبني **قائمة تجنب** كتطبق فالأوراق الجاية.")
+    if st.session_state.get("msg_j") and st.session_state.journal.empty is False and st.session_state.journal["won"].isna().sum() == 0:
+        st.success(st.session_state.pop("msg_j"))
+    manual_entry_form()
     j = st.session_state.journal
     if j.empty:
-        st.info("السجل خاوي. فقسم '🧠 فحص البرنامج الجديد ← 🎟️ بناء الأوراق' كليكي '💾 سجّل هاد الورقة'.")
+        st.info("السجل خاوي. جوج طرق باش تعمرو: (1) فقسم '🧠 فحص البرنامج الجديد ← 🎟️ بناء الأوراق' كليكي "
+                "'💾 سجّل هاد الورقة' قبل الماتشات، (2) ولا زيد اختيار لعبتيه يدويا فوق بالنتيجة ديالو. "
+                "من بعد غادي يبان هنا جدول النتائج والتحليل.")
         return
     settled = j[j["won"].notna()]
     pend = j[j["won"].isna()]
