@@ -448,7 +448,8 @@ def build_history(prog, res):
         a = None if pd.isna(r["hta"]) else int(r["hta"])
         for e in evaluate_match(r, int(r["gh"]), int(r["ga"]), h, a):
             rows.append({"mid": r["mid"], "date": r["date"], "league": r["league"], "match": r["match_text"],
-                         "score": f"{int(r['gh'])}-{int(r['ga'])}", **e})
+                         "score": f"{int(r['gh'])}-{int(r['ga'])}",
+                         "ht": f"{h}-{a}" if h is not None and a is not None else "", **e})
     return pd.DataFrame(rows)
 
 
@@ -1273,14 +1274,19 @@ def render_tickets(future, hist):
     used = set()
     plan = [("1) 🥇 الورقة الذهبية (3 ماتشات)", 3, "gold"), ("2) 🥈 الورقة الثانية (4 ماتشات)", 4, "second"),
             ("3) 🎲 الورقة عالية المخاطرة (6 ماتشات)", 6, "risk")]
+    built = []
     for title, n, key in plan:
         t = build_ticket(pool, n, cap, used) if not pool.empty else pd.DataFrame()
         if not t.empty:
             used |= set(t["mid"])
+            built.append((title, t))
             if len(t) < n:
                 st.warning(f"{title}: لقيت غير {len(t)} من {n} ماتش بهاد الشروط.")
         show_ticket(t, title, key)
         st.markdown("---")
+    if built and st.button("📤 صيفط الأوراق الثلاثة للسجل (دفعة وحدة)", type="primary", key="save_all"):
+        k_all = sum(journal_add(t, title, st.session_state.get("hf", {})) for title, t in built)
+        st.success(f"تسجلو {k_all} اختيار فسجل التوقعات. مللي تحط النتائج فالأرشيف غادي يتقارنو أوتوماتيكيا.")
     st.caption("الماتش اللي دخل ورقة ما كيتعاودش فالأوراق الأخرى، وكنعرض غير الماتشات اللي مازال ما بداوش.")
 
 
@@ -1437,6 +1443,41 @@ def journal_add(t, title, hf=None):
     st.session_state.journal = both.reset_index(drop=True)
     save_journal(st.session_state.journal)
     return len(new)
+
+
+def journal_sync():
+    """يسوّي أوتوماتيكيا الاختيارات المسجلة اللي نتيجتها ديجا فالأرشيف (بلا ما تدخلها مرة أخرى)."""
+    j, h = st.session_state.journal, st.session_state.hist
+    if j.empty or h.empty:
+        return 0
+    pend = j["won"].isna() & ~j["mid"].astype(str).str.startswith("manual_")
+    if not pend.any():
+        return 0
+    sub = h[h["mid"].isin(set(j.loc[pend, "mid"])) & h["won"].notna()]
+    if sub.empty:
+        return 0
+    lookup = {(r["mid"], r["market"], r["selection"]): (bool(r["won"]), r.get("score", ""), r.get("ht", ""))
+              for r in sub.to_dict("records")}
+    j, n = j.copy(), 0
+    for i in j.index[pend]:
+        v = lookup.get((j.at[i, "mid"], j.at[i, "market"], j.at[i, "selection"]))
+        if v is None:
+            continue
+        won, score, ht = v
+        gh, ga = _parse_score(score)
+        hh, ha = _parse_score(ht)
+        j.at[i, "won"], j.at[i, "status"] = won, "FT"
+        if gh is not None:
+            j.at[i, "gh"], j.at[i, "ga"] = gh, ga
+        if hh is not None:
+            j.at[i, "hth"], j.at[i, "hta"] = hh, ha
+        n += 1
+    if n:
+        st.session_state.journal = clean_journal(j)
+        save_journal(st.session_state.journal)
+        for k in ("jres", "jres_editor"):
+            st.session_state.pop(k, None)
+    return n
 
 
 def pick_result(market, sel, gh, ga, hth=None, hta=None):
@@ -1624,6 +1665,14 @@ def render_journal():
             "وكيبني **قائمة تجنب** كتطبق فالأوراق الجاية.")
     if st.session_state.get("msg_j") and st.session_state.journal.empty is False and st.session_state.journal["won"].isna().sum() == 0:
         st.success(st.session_state.pop("msg_j"))
+    k_sync = journal_sync()
+    if k_sync:
+        st.success(f"✅ تسوّاو {k_sync} اختيار أوتوماتيكيا من النتائج اللي ديجا فالأرشيف.")
+    jj0 = st.session_state.journal
+    waiting = int((jj0["won"].isna() & ~jj0["mid"].astype(str).str.startswith("manual_")).sum()) if not jj0.empty else 0
+    if waiting:
+        st.caption(f"⏳ {waiting} اختيار كيتسنى النتيجة. زيد نتائج ماتشاتهم فقسم '📥 رفع الأرشيف' (جلب ولا لصق النتائج) "
+                   "وكليكي 'ابدأ استخراج وتحليل وحفظ الأرشيف'، وغادي يتسواو هنا وحدهم.")
     manual_entry_form()
     j = st.session_state.journal
     if j.empty:
@@ -1911,7 +1960,9 @@ def main():
                 else:
                     st.session_state.hist = merge_history(st.session_state.hist, new)
                     save_history(st.session_state.hist)
-                    st.session_state.msg = f"تحفظو {new['mid'].nunique()} ماتش فالأرشيف."
+                    k_s = journal_sync()
+                    st.session_state.msg = (f"تحفظو {new['mid'].nunique()} ماتش فالأرشيف."
+                                            + (f" • تسوّاو {k_s} اختيار فسجل التوقعات وتقارنو." if k_s else ""))
                     for k in ("res", "sub", "errs", "res_editor"):
                         st.session_state.pop(k, None)
                     st.rerun()
