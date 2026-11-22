@@ -1844,6 +1844,8 @@ def main():
                                             "⚙️ ربط API النتائج (API-Football)"])
     st.sidebar.metric("ماتشات فالأرشيف", hist["mid"].nunique() if not hist.empty else 0)
     st.sidebar.metric("ماتشات فالانتظار", len(pend))
+    _j = st.session_state.journal
+    st.sidebar.metric("سجل التوقعات (محسوبة / مسجلة)", f"{int(_j['won'].notna().sum())} / {len(_j)}")
     if not hist.empty:
         st.sidebar.download_button("⬇️ نسخة احتياطية: الأرشيف", hist.to_csv(index=False).encode("utf-8"),
                                    "history.csv", "text/csv")
